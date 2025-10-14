@@ -1,2 +1,6 @@
 .venv
 data
+.env
+.poetry.lock
+.pytest_cache
+.ruff_cache
