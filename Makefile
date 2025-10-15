@@ -1,4 +1,4 @@
-.PHONY: format lint test
+.PHONY: format lint test clickhouse-up postgres-up redis-up prune start-app
 
 SRC := ./
 
@@ -11,8 +11,7 @@ lint:
 	poetry run ruff check $(SRC)
 	
 test:
-	poetry run pytest -v --disable-warnings -p no:cacheprovider 
-
+	poetry run pytest -v --disable-warnings -p no:cacheprovider
 
 clickhouse-up:	
 	docker run -d \
@@ -38,18 +37,25 @@ postgres-up:
 redis-up:
 	docker run -d --name redis -p 6379:6379 redis:7
 
-
 prune:	
 	docker container prune -f
 	docker volume prune -f
 	docker volume rm clickhouse_data -f
 	docker volume rm postgres_data -f
 
-start-app:
-	@echo "🚀 Starting Redis, Django, and Celery..."	
-	export DJANGO_SETTINGS_MODULE=config.settings; \
-	poetry run celery -A config worker -B -l info & \
-	sleep 3; \
-	poetry run python manage.py runserver 0.0.0.0:8000
+start-app: migrate
+	@echo "🛠 Running migrations..."
 	
+	@echo "🚀 Starting Celery worker..."
+	export DJANGO_SETTINGS_MODULE=config.settings; \
+	poetry run celery -A config worker -l info & \
+	@echo "🚀 Starting Celery Beat..."
+	export DJANGO_SETTINGS_MODULE=config.settings; \
+	poetry run celery -A config beat -l info & \
+	@echo "🚀 Starting Django server..."
+	export DJANGO_SETTINGS_MODULE=config.settings; \
+	poetry run python manage.py runserver 0.0.0.0:8000 & \
+	@echo "⚡ Triggering startup ETL task..."
+	export DJANGO_SETTINGS_MODULE=config.settings; \
+	poetry run python manage.py run_startup_etl
 
