@@ -13,7 +13,7 @@ from typing import Optional
 from tqdm import tqdm
 
 # -----------------------------
-# Global logger setup
+# Глобальный логгер
 # -----------------------------
 log = logging.getLogger("MLPipeline")
 log.setLevel(logging.INFO)
@@ -24,6 +24,10 @@ log.addHandler(ch)
 
 
 class ML:
+    """
+    Класс ML пайплайна с возможностью обучения модели,
+    рекурсивного L1 отбора и предсказания
+    """
     def __init__(self, random_state: int = 13):
         self.random_state = random_state
         self.clf: Optional[LogisticRegression] = None
@@ -32,20 +36,20 @@ class ML:
         self.team_dict: Optional[dict] = None
 
     # -------------------------
-    # Bag-of-players and teams
+    # Bag-of-players и Bag-of-teams
     # -------------------------
     def _transform_player_bag(self, X_players: np.ndarray) -> csr_matrix:
         n_samples = X_players.shape[0]
         n_features = len(self.player_dict)
         rows, cols, data = [], [], []
         for i in range(n_samples):
-            for j in range(5):  # Team1 +1
+            for j in range(5):  # Команда 1 +1
                 idx = self.player_dict.get(X_players[i, j])
                 if idx is not None:
                     rows.append(i)
                     cols.append(idx)
                     data.append(1)
-            for j in range(5, 10):  # Team2 -1
+            for j in range(5, 10):  # Команда 2 -1
                 idx = self.player_dict.get(X_players[i, j])
                 if idx is not None:
                     rows.append(i)
@@ -71,10 +75,13 @@ class ML:
         return csr_matrix((data, (rows, cols)), shape=(n_samples, n_features))
 
     def _transform_bag(self, X_players: np.ndarray, X_teams: np.ndarray) -> csr_matrix:
+        """
+        Объединение Bag-of-players и Bag-of-teams
+        """
         return hstack([self._transform_player_bag(X_players), self._transform_team_bag(X_teams)], format='csr')
 
     # -------------------------
-    # Recursive L1 selection
+    # Рекурсивный L1 отбор признаков
     # -------------------------
     def _recursive_l1_selection(self, X: np.ndarray, y: np.ndarray, C: float = 1.0) -> np.ndarray:
         n_features = X.shape[1]
@@ -88,16 +95,16 @@ class ML:
             coef_nonzero = (clf_l1.coef_.flatten() != 0)
             new_selected_mask = np.zeros_like(selected_mask)
             new_selected_mask[selected_mask] = coef_nonzero
-            log.info("Iteration %d: %d features selected", iteration, coef_nonzero.sum())
+            log.info("Итерация %d: выбрано %d признаков", iteration, coef_nonzero.sum())
             if (new_selected_mask == selected_mask).all():
-                log.info("Feature selection converged.")
+                log.info("Отбор признаков сошелся.")
                 break
             selected_mask = new_selected_mask
             X_selected = X[:, selected_mask]
         return selected_mask
 
     # -------------------------
-    # GridSearch optimization
+    # Подбор параметра C через GridSearch
     # -------------------------
     def _optimize_logit(self, X: np.ndarray, y: np.ndarray) -> float:
         param_grid = {"C": np.linspace(0.01, 1, 10)}
@@ -108,14 +115,14 @@ class ML:
         )
         grid.fit(X, y)
         best_C = grid.best_params_['C']
-        log.info("Best C found: %.4f (AUC=%.4f)", best_C, grid.best_score_)
+        log.info("Лучшее значение C: %.4f (AUC=%.4f)", best_C, grid.best_score_)
         return best_C
 
     # -------------------------
-    # Fit / Predict
+    # Обучение модели
     # -------------------------
     def fit(self, X_players: np.ndarray, X_teams: np.ndarray, y: np.ndarray) -> "ML":
-        log.info("Starting recursive L1 feature selection...")
+        log.info("Запуск рекурсивного L1 отбора признаков...")
         self.player_dict = {pid: idx for idx, pid in enumerate(np.unique(X_players))}
         self.team_dict = {tid: idx for idx, tid in enumerate(np.unique(X_teams))}
         X_encoded = self._transform_bag(X_players, X_teams)
@@ -128,31 +135,38 @@ class ML:
         self.selected_features = full_selected_mask
         self.clf = LogisticRegression(solver='liblinear', C=best_C, random_state=self.random_state)
         self.clf.fit(X_encoded[:, self.selected_features], y)
-        log.info("Number of selected features: %d", self.selected_features.sum())
+        log.info("Количество выбранных признаков: %d", self.selected_features.sum())
         return self
 
+    # -------------------------
+    # Предсказание вероятности
+    # -------------------------
     def predict_proba(self, X_players: np.ndarray, X_teams: np.ndarray) -> np.ndarray:
         X_encoded = self._transform_bag(X_players, X_teams)
         X_selected = X_encoded[:, self.selected_features]
         return self.clf.predict_proba(X_selected)[:, 1]
 
+    # -------------------------
+    # Предсказание классов
+    # -------------------------
     def predict(self, X_players: np.ndarray, X_teams: np.ndarray, threshold: float = 0.5) -> np.ndarray:
         return (self.predict_proba(X_players, X_teams) >= threshold).astype(int)
 
-    
-
 
 # -----------------------------
-# Dataset functions
+# Функции для загрузки данных
 # -----------------------------
 def get_X_players(game_ids, path_to_games_raw_dir):
+    """
+    Получение массива игроков для каждой команды
+    """
     X = []
-    for game_id in tqdm(game_ids):        
+    for game_id in tqdm(game_ids):
         with open(os.path.join(path_to_games_raw_dir, f"{game_id}.json"), "r", encoding="utf-8") as f:
-            game_data = json.load(f)            
+            game_data = json.load(f)
         dd = defaultdict(list)
         for p in game_data["players"]:
-            dd[p["team"]["id"]].append(p["player"]["id"])        
+            dd[p["team"]["id"]].append(p["player"]["id"])
         t1_id, t2_id = sorted(dd.keys())
         team1_players = sorted(dd[t1_id])
         team2_players = sorted(dd[t2_id])
@@ -161,39 +175,25 @@ def get_X_players(game_ids, path_to_games_raw_dir):
 
 
 def get_X_teams(game_ids, path_to_games_raw_dir):
+    """
+    Получение массива команд
+    """
     X = []
-    for game_id in tqdm(game_ids):        
+    for game_id in tqdm(game_ids):
         with open(os.path.join(path_to_games_raw_dir, f"{game_id}.json"), "r", encoding="utf-8") as f:
-            game_data = json.load(f)            
+            game_data = json.load(f)
         dd = defaultdict(list)
         for p in game_data["players"]:
-            dd[p["team"]["id"]].append(p["player"]["id"])        
+            dd[p["team"]["id"]].append(p["player"]["id"])
         t1_id, t2_id = sorted(dd.keys())
         X.append([t1_id, t2_id])
     return np.array(X)
 
-def get_info(game_ids, path_to_games_raw_dir):
-    """
-    Extracts game info: map_id, league_id, serie_id, tournament_id, serie_tier
-    """
-    info_list = []
-    for game_id in tqdm(game_ids):
-        with open(os.path.join(path_to_games_raw_dir, f"{game_id}.json"), "r", encoding="utf-8") as f:
-            game_data = json.load(f)
-        
-        map_id = game_data.get("map", {}).get("id", None)
-        match = game_data.get("match", {})
-        league_id = match.get("league", {}).get("id", None)
-        serie_id = match.get("serie", {}).get("id", None)
-        tournament_id = match.get("tournament", {}).get("id", None)
-        serie_tier = match.get("serie", {}).get("tier", None)
-        
-        info_list.append([map_id, league_id, serie_id, tournament_id, serie_tier])
-    
-    return np.array(info_list)
-
 
 def get_y(game_ids, path_to_games_raw_dir):
+    """
+    Получение целевой переменной: победа первой команды
+    """
     y = []
     for game_id in tqdm(game_ids):
         with open(os.path.join(path_to_games_raw_dir, f"{game_id}.json"), "r", encoding="utf-8") as f:
@@ -216,10 +216,10 @@ def get_y(game_ids, path_to_games_raw_dir):
 # CLI
 # -----------------------------
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train ML model on train/test game IDs.")
+    parser = argparse.ArgumentParser(description="Обучение ML модели на игровых данных")
     parser.add_argument("--path_to_games_raw_dir", type=str, default="data/games_raw")
     parser.add_argument("--path_to_train_test_split_file", type=str, default="data/train_test_splits/8eaa28297645dca5.json")
-    parser.add_argument("--path_to_ml_results_dir", type=str, default="data/ml_results")    
+    parser.add_argument("--path_to_ml_results_dir", type=str, default="data/ml_results")
     return parser.parse_args()
 
 
@@ -227,7 +227,7 @@ def main():
     args = parse_args()
     os.makedirs(args.path_to_ml_results_dir, exist_ok=True)
 
-    log.info("Loading train/test game IDs...")
+    log.info("Загрузка ID игр для обучения и теста...")
     with open(args.path_to_train_test_split_file, "r", encoding="utf-8") as f:
         split_data = json.load(f)
     train_ids = split_data["train"]
@@ -235,35 +235,23 @@ def main():
 
     hash_id = os.path.splitext(os.path.basename(args.path_to_train_test_split_file))[0]
 
-    log.info("Initializing ML pipeline...")
+    log.info("Инициализация ML пайплайна...")
     pipeline = ML()
 
-    # -----------------------------
-    # Build train dataset
-    # -----------------------------
-    log.info("Building train dataset...")
+    log.info("Формирование обучающего набора данных...")
     X_train_players = get_X_players(train_ids, args.path_to_games_raw_dir)
     X_train_teams = get_X_teams(train_ids, args.path_to_games_raw_dir)
     y_train = get_y(train_ids, args.path_to_games_raw_dir)
 
-    # -----------------------------
-    # Build test dataset
-    # -----------------------------
-    log.info("Building test dataset...")
+    log.info("Формирование тестового набора данных...")
     X_test_players = get_X_players(test_ids, args.path_to_games_raw_dir)
     X_test_teams = get_X_teams(test_ids, args.path_to_games_raw_dir)
     y_test = get_y(test_ids, args.path_to_games_raw_dir)
 
-    # -----------------------------
-    # Train model
-    # -----------------------------
-    log.info("Training model...")
+    log.info("Обучение модели...")
     pipeline.fit(X_train_players, X_train_teams, y_train)
 
-    # -----------------------------
-    # Predict and evaluate
-    # -----------------------------
-    log.info("Predicting on test set...")
+    log.info("Предсказание на тестовом наборе...")
     y_pred = pipeline.predict(X_test_players, X_test_teams)
     y_proba = pipeline.predict_proba(X_test_players, X_test_teams)
 
@@ -286,20 +274,17 @@ def main():
         "n_test": len(y_test)
     }
 
-    log.info("Metrics computed:\n%s", json.dumps(metrics, indent=4))
+    log.info("Вычисленные метрики:\n%s", json.dumps(metrics, indent=4))
 
-    # -----------------------------
-    # Save model and metrics
-    # -----------------------------
     model_file = os.path.join(args.path_to_ml_results_dir, f"{hash_id}.pickle")
     with open(model_file, "wb") as f:
         pickle.dump(pipeline, f)
-    log.info("Model saved to %s", model_file)
+    log.info("Модель сохранена в %s", model_file)
 
     metrics_file = os.path.join(args.path_to_ml_results_dir, f"{hash_id}.json")
     with open(metrics_file, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=4)
-    log.info("Metrics saved to %s", metrics_file)
+    log.info("Метрики сохранены в %s", metrics_file)
 
 
 if __name__ == "__main__":
