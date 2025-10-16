@@ -20,3 +20,12 @@ class ForecastResponse(BaseModel):
     team1_win_prob: float = Field(..., title="Вероятность победы первой команды", description="Вероятность выигрыша первой команды (от 0 до 1)")
     team2_win_prob: float = Field(..., title="Вероятность победы второй команды", description="Вероятность выигрыша второй команды (от 0 до 1)")
     
+    
+def create_forecast_router(forecast_service: ForecastService) -> APIRouter:
+    router = APIRouter(prefix="/forecast")
+
+    @router.post("/", response_model=ForecastResponse)
+    async def get_forecast(request: ForecastRequest):
+        return await forecast_service.get_forecast(request)
+
+    return router

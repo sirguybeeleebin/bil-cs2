@@ -1,6 +1,6 @@
 import pickle
 import argparse
-from fastapi import FastAPI, APIRouter, Response
+from fastapi import FastAPI, APIRouter
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 import uvicorn
@@ -9,28 +9,19 @@ from contextlib import asynccontextmanager
 
 from backend.repositories import TeamRepository, PlayerRepository
 from backend.services import TeamService, PlayerService, ForecastService
-from backend.models.forecast import ForecastRequest, ForecastResponse
-from backend.models.team import TeamResponse
-from backend.models.player import PlayerResponse
-
-
+from backend.routers.team import create_team_router
+from backend.routers.player import create_player_router
+from backend.routers.forecast import create_forecast_router
 
 class Settings(BaseSettings):
-    model_path: str = Field(
-        default="data/ml_results/8eaa28297645dca5.pickle"
-    )
-    sqlite_url: str = Field(
-        default="../sqlite/db.sqlite"
-    )
+    model_path: str = Field(default="data/ml_results/8eaa28297645dca5.pickle")
+    sqlite_url: str = Field(default="../sqlite/db.sqlite")
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8000)
     debug: bool = Field(default=False)
     api_prefix: str = Field(default="/api/v1")
 
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8"
-    )
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 def get_settings() -> Settings:
     parser = argparse.ArgumentParser()
@@ -49,10 +40,8 @@ def create_app(settings: Settings) -> FastAPI:
 
         conn = await aiosqlite.connect(settings.sqlite_url)
 
-        team_repository = TeamRepository(conn)
-        player_repository = PlayerRepository(conn)
-        team_service = TeamService(team_repository)
-        player_service = PlayerService(player_repository)
+        team_service = TeamService(TeamRepository(conn))
+        player_service = PlayerService(PlayerRepository(conn))
         forecast_service = ForecastService(ml_model, team_service, player_service)
 
         app.state.conn = conn
@@ -65,20 +54,11 @@ def create_app(settings: Settings) -> FastAPI:
         await conn.close()
 
     app = FastAPI(lifespan=lifespan)
-
+    
     router = APIRouter(prefix=settings.api_prefix)
-
-    @router.get("/team/{team_name}")
-    async def search_team_by_name(team_name: str) -> list[TeamResponse]:       
-        return await app.state.team_service.search_team_by_name(team_name)
-
-    @router.get("/player/{player_name}")
-    async def search_player_by_name(player_name: str) -> list[PlayerResponse]:        
-        return await app.state.player_service.search_player_by_name(player_name)
-
-    @router.post("/forecast")
-    async def get_forecast(request: ForecastRequest) -> ForecastResponse:
-        return await app.state.forecast_service.get_forecast(request)
+    router.include_router(create_team_router(app.state.team_service))
+    router.include_router(create_player_router(app.state.player_service))
+    router.include_router(create_forecast_router(app.state.forecast_service))
 
     app.include_router(router)
     return app

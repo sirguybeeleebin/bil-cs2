@@ -24,6 +24,15 @@ clickhouse-up:
 		-v clickhouse_data:/var/lib/clickhouse \
 		clickhouse/clickhouse-server:24.8
 
+rabbitmq-up:
+	docker run -d \
+		--name rabbitmq \
+		-p 5672:5672 \
+		-p 15672:15672 \
+		-e RABBITMQ_DEFAULT_USER=cs2_user \
+		-e RABBITMQ_DEFAULT_PASS=cs2_password \
+		rabbitmq:3-management
+
 postgres-up:
 	docker run -d \
 		--name postgres \
