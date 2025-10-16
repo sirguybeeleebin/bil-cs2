@@ -1,60 +1,69 @@
+import argparse
+import ast
+import hashlib
 import json
 import logging
 import pickle
+from datetime import datetime, timezone
+from functools import partial
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
-from clickhouse_driver import Client
+
 import numpy as np
+import pika
+from clickhouse_driver import Client
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from scipy import sparse
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.preprocessing import OneHotEncoder, MinMaxScaler
 from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 from sklearn.model_selection import TimeSeriesSplit
-from multiprocessing import Pool, cpu_count
-from functools import partial
-from pydantic_settings import BaseSettings, SettingsConfigDict
-import argparse
-import pika
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
 
-# ================= Logging =================
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
 log = logging.getLogger(__name__)
 
-# ================= Settings =================
+
 class Settings(BaseSettings):
-    clickhouse_host: str = "localhost"
-    clickhouse_port: int = 9000
-    clickhouse_user: str = "cs2_user"
-    clickhouse_password: str = "cs2_password"
-    clickhouse_db: str = "cs2_db"
-
-    rabbitmq_url: str = "amqp://guest:guest@localhost:5672/%2F"
-    rabbitmq_exchange: str = "cs2"
-    rabbitmq_exchange_type: str = "direct"
-
-    rabbitmq_consume_queue: str = "cs2_split_created_queue"
-    rabbitmq_consume_routing_key: str = "cs2.split_created"
-
-    rabbitmq_publish_queue: str = "cs2_ml_completed_queue"
-    rabbitmq_publish_routing_key: str = "cs2.ml_completed"
-
-    output_dir: str = "data/ml"
-
+    CLICKHOUSE_HOST: str = "localhost"
+    CLICKHOUSE_PORT: int = 9000
+    CLICKHOUSE_HTTP_PORT: int = 8123
+    CLICKHOUSE_USER: str = "cs2_user"
+    CLICKHOUSE_PASSWORD: str = "cs2_password"
+    CLICKHOUSE_DB: str = "cs2_db"
+    RABBITMQ_USER: str = "cs2_user"
+    RABBITMQ_PASSWORD: str = "cs2_password"
+    RABBITMQ_HOST: str = "localhost"
+    RABBITMQ_AMQP_PORT: int = 5672
+    RABBITMQ_MANAGEMENT_PORT: int = 15672
+    RABBITMQ_EXCHANGE: str = "cs2_exchange"
+    RABBITMQ_EXCHANGE_TYPE: str = "direct"
+    RABBITMQ_QUEUE: str = "cs2_queue"
+    RABBITMQ_ROUTING_KEY_ETL: str = "cs2.etl_completed"
+    RABBITMQ_ROUTING_KEY_SPLIT: str = "cs2.split_created"
+    RABBITMQ_ROUTING_KEY_ML: str = "cs2.ml_completed"
+    OUTPUT_DIR_RAW_SPLITS: str = "data/train_test_splits"
+    OUTPUT_DIR_ML: str = "data/ml"
+    PATH_TO_GAMES_RAW_DIR: str = "data/games_raw"
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-# ================= Fetch data =================
-def _fetch_games_by_ids(client: Client, game_ids, clickhouse_db="cs2_db"):
+
+def fetch_games_by_ids(client: Client, game_ids, clickhouse_db="cs2_db"):
     if not game_ids:
         log.warning("Список game_ids пуст. Возвращаю пустые массивы.")
         return np.array([]), np.array([])
-
-    log.info(f"Fetching data for {len(game_ids)} games from ClickHouse...")
+    log.info(f"Получение данных для {len(game_ids)} игр из ClickHouse...")
     ids_str = ",".join(str(i) for i in game_ids)
     query = f"""
     SELECT
@@ -92,25 +101,25 @@ def _fetch_games_by_ids(client: Client, game_ids, clickhouse_db="cs2_db"):
     """
     result = client.execute(query, with_column_types=True)
     if not result:
-        log.warning("Query returned empty result.")
+        log.warning("Запрос вернул пустой результат.")
         return np.array([]), np.array([])
-
     rows = [list(r) for r in result[0]]
     for row in rows:
         if hasattr(row[1], "timestamp"):
             row[1] = row[1].timestamp()
     X = np.array([r[1:-1] for r in rows], dtype=float)
     y = np.array([r[-1] for r in rows], dtype=int)
-    log.info(f"Fetched {len(X)} rows with {X.shape[1]} features.")
+    log.info(f"Получено {len(X)} строк с {X.shape[1]} признаками.")
     return X, y
 
-# ================= Encoders =================
+
 class TeamBagEncoder(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
         X = np.asarray(X)
         self.d = {val: idx for idx, val in enumerate(np.unique(X.flatten()))}
-        log.info(f"TeamBagEncoder: {len(self.d)} unique teams found.")
+        log.info(f"TeamBagEncoder: найдено {len(self.d)} уникальных команд.")
         return self
+
     def transform(self, X):
         X = np.asarray(X)
         rows, cols, data = [], [], []
@@ -120,14 +129,18 @@ class TeamBagEncoder(BaseEstimator, TransformerMixin):
                     rows.append(i)
                     cols.append(self.d[val])
                     data.append(1 if j == 0 else -1)
-        return sparse.csr_matrix((data, (rows, cols)), shape=(X.shape[0], len(self.d)), dtype=int)
+        return sparse.csr_matrix(
+            (data, (rows, cols)), shape=(X.shape[0], len(self.d)), dtype=int
+        )
+
 
 class PlayerBagEncoder(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
         X = np.asarray(X)
         self.d = {val: idx for idx, val in enumerate(np.unique(X.flatten()))}
-        log.info(f"PlayerBagEncoder: {len(self.d)} unique players found.")
+        log.info(f"PlayerBagEncoder: найдено {len(self.d)} уникальных игроков.")
         return self
+
     def transform(self, X):
         X = np.asarray(X)
         rows, cols, data = [], [], []
@@ -137,9 +150,11 @@ class PlayerBagEncoder(BaseEstimator, TransformerMixin):
                     rows.append(i)
                     cols.append(self.d[val])
                     data.append(1 if j < 5 else -1)
-        return sparse.csr_matrix((data, (rows, cols)), shape=(X.shape[0], len(self.d)), dtype=int)
+        return sparse.csr_matrix(
+            (data, (rows, cols)), shape=(X.shape[0], len(self.d)), dtype=int
+        )
 
-# ================= Recursive Feature Selector =================
+
 class RecursiveFeatureSelector(BaseEstimator, TransformerMixin):
     def __init__(self, random_state=42, cv_splits=10, n_repeats=1):
         self.random_state = random_state
@@ -154,19 +169,23 @@ class RecursiveFeatureSelector(BaseEstimator, TransformerMixin):
         iteration = 0
         while True:
             iteration += 1
-            log.info(f"RFS iteration {iteration}, features={len(selected_features)}")
+            log.info(f"RFS итерация {iteration}, признаков={len(selected_features)}")
             X_sel = X[:, selected_features]
             tscv = TimeSeriesSplit(n_splits=self.cv_splits)
             fold_importances = []
             for tr_idx, val_idx in tscv.split(X_sel, y):
                 model = LogisticRegression(random_state=self.random_state)
                 model.fit(X_sel[tr_idx], y[tr_idx])
-                imp = self._permutation_importance(model, X_sel[val_idx], y[val_idx], self.n_repeats)
+                imp = self._permutation_importance(
+                    model, X_sel[val_idx], y[val_idx], self.n_repeats
+                )
                 fold_importances.append(imp)
             avg_importance = {}
             for imp in fold_importances:
                 for k, v in imp.items():
-                    avg_importance[k] = avg_importance.get(k, 0) + v / len(fold_importances)
+                    avg_importance[k] = avg_importance.get(k, 0) + v / len(
+                        fold_importances
+                    )
             non_zero_idx = np.array([k for k, v in avg_importance.items() if v > 0])
             if len(non_zero_idx) == len(selected_features) or len(non_zero_idx) == 0:
                 break
@@ -176,7 +195,7 @@ class RecursiveFeatureSelector(BaseEstimator, TransformerMixin):
 
     def transform(self, X):
         if self.selected_features_ is None:
-            raise RuntimeError("RFS not fitted yet!")
+            raise RuntimeError("RFS не обучен!")
         return X[:, self.selected_features_]
 
     def _permutation_importance(self, model, X_val, y_val, n_repeats=5):
@@ -184,42 +203,63 @@ class RecursiveFeatureSelector(BaseEstimator, TransformerMixin):
             X_val = X_val.tocsr()
         baseline = roc_auc_score(y_val, model.predict_proba(X_val)[:, 1])
         pool = Pool(cpu_count())
-        func = partial(_perm_col_importance, model=model, X_val=X_val, y_val=y_val,
-                       baseline_score=baseline, n_repeats=n_repeats, rng_seed=self.random_state)
+        func = partial(
+            perm_col_importance,
+            model=model,
+            X_val=X_val,
+            y_val=y_val,
+            baseline_score=baseline,
+            n_repeats=n_repeats,
+            rng_seed=self.random_state,
+        )
         results = list(pool.imap(func, range(X_val.shape[1])))
-        pool.close(); pool.join()
+        pool.close()
+        pool.join()
         return {col: score for col, score in results}
 
-def _perm_col_importance(col_idx, model, X_val, y_val, baseline_score, n_repeats, rng_seed):
+
+def perm_col_importance(
+    col_idx, model, X_val, y_val, baseline_score, n_repeats, rng_seed
+):
     rng = np.random.default_rng(rng_seed + col_idx)
     scores = []
     X_dense = X_val.toarray() if sparse.issparse(X_val) else X_val
     for _ in range(n_repeats):
         X_perm = X_dense.copy()
         rng.shuffle(X_perm[:, col_idx])
-        scores.append(baseline_score - roc_auc_score(y_val, model.predict_proba(X_perm)[:, 1]))
+        scores.append(
+            baseline_score - roc_auc_score(y_val, model.predict_proba(X_perm)[:, 1])
+        )
     return col_idx, np.mean(scores)
 
-# ================= Pipeline =================
-def _create_pipeline():
+
+def create_pipeline():
     TIMESTAMP_IDX = 0
     CATEGORICAL_IDX = [1, 2, 3, 4, 5]
     TEAM_IDX = [6, 7]
     PLAYER_IDX = list(range(8, 18))
-    preprocessor = ColumnTransformer([
-        ("timestamp", MinMaxScaler(), [TIMESTAMP_IDX]),
-        ("categorical", OneHotEncoder(handle_unknown="ignore", sparse_output=True), CATEGORICAL_IDX),
-        ("teams", TeamBagEncoder(), TEAM_IDX),
-        ("players", PlayerBagEncoder(), PLAYER_IDX)
-    ])
-    return Pipeline([
-        ("preprocessing", preprocessor),
-        ("feature_selection", RecursiveFeatureSelector()),
-        ("classifier", LogisticRegression(random_state=42, solver="liblinear"))
-    ])
+    preprocessor = ColumnTransformer(
+        [
+            ("timestamp", MinMaxScaler(), [TIMESTAMP_IDX]),
+            (
+                "categorical",
+                OneHotEncoder(handle_unknown="ignore", sparse_output=True),
+                CATEGORICAL_IDX,
+            ),
+            ("teams", TeamBagEncoder(), TEAM_IDX),
+            ("players", PlayerBagEncoder(), PLAYER_IDX),
+        ]
+    )
+    return Pipeline(
+        [
+            ("preprocessing", preprocessor),
+            ("feature_selection", RecursiveFeatureSelector()),
+            ("classifier", LogisticRegression(random_state=42, solver="liblinear")),
+        ]
+    )
 
-# ================= Metrics =================
-def _get_metrics(y_true, y_proba, threshold=0.5):
+
+def get_metrics(y_true, y_proba, threshold=0.5):
     y_pred = (y_proba >= threshold).astype(int)
     acc = accuracy_score(y_true, y_pred)
     prec = precision_score(y_true, y_pred, zero_division=0)
@@ -227,115 +267,136 @@ def _get_metrics(y_true, y_proba, threshold=0.5):
     f1 = f1_score(y_true, y_pred, zero_division=0)
     auc = roc_auc_score(y_true, y_proba)
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
-    return {"accuracy": round(acc,2), "precision": round(prec,2),
-            "recall": round(rec,2), "f1": round(f1,2), "auc": round(auc,2),
-            "tp": int(tp), "tn": int(tn), "fp": int(fp), "fn": int(fn)}
+    return {
+        "accuracy": round(acc, 2),
+        "precision": round(prec, 2),
+        "recall": round(rec, 2),
+        "f1": round(f1, 2),
+        "auc": round(auc, 2),
+        "tp": int(tp),
+        "tn": int(tn),
+        "fp": int(fp),
+        "fn": int(fn),
+    }
 
-# ================= Pipeline Runner =================
-def _run_pipeline(client: Client, train_ids, test_ids, clickhouse_db):
-    X_train, y_train = _fetch_games_by_ids(client, train_ids, clickhouse_db)
-    X_test, y_test = _fetch_games_by_ids(client, test_ids, clickhouse_db)
 
-    pipeline = _create_pipeline()
-    log.info("Training pipeline...")
+def run_pipeline(client: Client, train_ids, test_ids, clickhouse_db):
+    X_train, y_train = fetch_games_by_ids(client, train_ids, clickhouse_db)
+    X_test, y_test = fetch_games_by_ids(client, test_ids, clickhouse_db)
+    if len(X_train) == 0 or len(X_test) == 0:
+        log.warning("Пустые данные train/test, пропуск выполнения pipeline.")
+        return None, None
+    pipeline = create_pipeline()
+    log.info("Обучение pipeline...")
     pipeline.fit(X_train, y_train)
-    log.info("Pipeline trained.")
-
+    log.info("Pipeline обучен.")
     y_proba = pipeline.predict_proba(X_test)[:, 1]
-    metrics = _get_metrics(y_test, y_proba)
-    log.info(f"Pipeline metrics: {metrics}")
+    metrics = get_metrics(y_test, y_proba)
+    log.info(f"Метрики pipeline: {metrics}")
     return pipeline, metrics
 
-# ================= RabbitMQ =================
-def consume_rabbit(client: Client, clickhouse_db: str, channel, consume_queue: str, exchange: str, publish_queue: str, output_dir: str):
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    def callback(ch, method, properties, body):
-        message = json.loads(body)
-        split_file = message.get("split_file")
-        hash_id = Path(split_file).stem
-        log.info(f"Received split_file: {split_file} (hash_id={hash_id})")
-
-        with open(split_file, "r", encoding="utf-8") as f:
-            split_data = json.load(f)
-        train_ids, test_ids = split_data.get("train", []), split_data.get("test", [])
-
-        pipeline, metrics = _run_pipeline(client, train_ids, test_ids, clickhouse_db)
-
-        # Save pipeline
-        pipeline_path = Path(output_dir) / f"{hash_id}.pkl"
-        with open(pipeline_path, "wb") as f:
-            pickle.dump(pipeline, f)
-        log.info(f"Saved pipeline to {pipeline_path}")
-
-        # Save metrics
-        metrics_path = Path(output_dir) / f"{hash_id}.json"
-        with open(metrics_path, "w", encoding="utf-8") as f:
-            json.dump(metrics, f, ensure_ascii=False, indent=2)
-        log.info(f"Saved metrics to {metrics_path}")
-
-        # Publish to RabbitMQ
-        _publish_rabbit(channel, publish_queue, exchange, metrics)
-        ch.basic_ack(delivery_tag=method.delivery_tag)
-
-    channel.basic_consume(queue=consume_queue, on_message_callback=callback)
-    channel.start_consuming()
-
-def _publish_rabbit(channel, publish_queue: str, exchange: str, message: dict):
-    channel.basic_publish(
-        exchange=exchange,
-        routing_key=publish_queue,
-        body=json.dumps(message),
-        properties=pika.BasicProperties(content_type='application/json', delivery_mode=2)
-    )
-    log.info(f"Published metrics: {message}")
-
-def _get_settings() -> Settings:
-    parser = argparse.ArgumentParser()
+def get_settings() -> Settings:
+    parser = argparse.ArgumentParser(description="ML consumer for split messages")
     parser.add_argument("--env-file", type=str, default=".env")
     args = parser.parse_args()
     env_path = Path(args.env_file)
-    return Settings(_env_file=env_path) if env_path.exists() else Settings()
+    if env_path.exists():
+        log.info(f"Загрузка конфигурации из {env_path}")
+        return Settings(_env_file=env_path)
+    log.warning(f"Файл {env_path} не найден, используются настройки по умолчанию")
+    return Settings()
+
+
+def handle_message(body: bytes, channel, method, settings: Settings, client: Client):
+    try:
+        log.info(f"Получено сообщение с разбиением: {body.decode()}")
+        data = ast.literal_eval(body.decode())
+        train_ids = data.get("train", [])
+        test_ids = data.get("test", [])
+        if not train_ids and not test_ids:
+            log.warning("Пустое разбиение, пропуск обучения.")
+            return
+        log.info(
+            f"Запуск ML pipeline для {len(train_ids)} train и {len(test_ids)} test образцов."
+        )
+        pipeline, metrics = run_pipeline(
+            client, train_ids, test_ids, settings.CLICKHOUSE_DB
+        )
+        if pipeline is None:
+            log.warning("Pipeline пропущен из-за пустых данных.")
+            return
+        hash_input = ",".join(str(x) for x in train_ids + test_ids)
+        hash_id = hashlib.md5(hash_input.encode("utf-8")).hexdigest()
+        result = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "hash_id": hash_id,
+            "metrics": metrics,
+        }
+        output_dir = Path(settings.OUTPUT_DIR_ML)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        json_file = output_dir / f"{hash_id}.json"
+        with open(json_file, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        model_file = output_dir / f"{hash_id}.pkl"
+        with open(model_file, "wb") as f:
+            pickle.dump(pipeline, f)
+        log.info(
+            f"Результаты ML сохранены: метрики — {json_file}, модель — {model_file}"
+        )
+        channel.basic_publish(
+            exchange=settings.RABBITMQ_EXCHANGE,
+            routing_key=settings.RABBITMQ_ROUTING_KEY_ML,
+            body=json.dumps(result),
+        )
+        log.info(
+            f"Сообщение о завершении ML отправлено: {settings.RABBITMQ_ROUTING_KEY_ML}"
+        )
+    except Exception as e:
+        log.exception(f"Ошибка при обработке сообщения: {e}")
+    finally:
+        if method:
+            channel.basic_ack(delivery_tag=method.delivery_tag)
+
 
 def main():
-    settings = _get_settings()
-    client = Client(
-        host=settings.clickhouse_host,
-        port=settings.clickhouse_port,
-        user=settings.clickhouse_user,
-        password=settings.clickhouse_password,
-        database=settings.clickhouse_db
+    settings = get_settings()
+    credentials = pika.PlainCredentials(
+        settings.RABBITMQ_USER, settings.RABBITMQ_PASSWORD
     )
-
-    connection = pika.BlockingConnection(pika.URLParameters(settings.rabbitmq_url))
+    parameters = pika.ConnectionParameters(
+        host=settings.RABBITMQ_HOST,
+        port=settings.RABBITMQ_AMQP_PORT,
+        credentials=credentials,
+    )
+    connection = pika.BlockingConnection(parameters)
     channel = connection.channel()
-
-    # Declare exchange
     channel.exchange_declare(
-        exchange=settings.rabbitmq_exchange,
-        exchange_type=settings.rabbitmq_exchange_type,
-        durable=True
+        exchange=settings.RABBITMQ_EXCHANGE,
+        exchange_type=settings.RABBITMQ_EXCHANGE_TYPE,
+        durable=True,
     )
-
-    # Declare consume queue and bind
-    channel.queue_declare(queue=settings.rabbitmq_consume_queue, durable=True)
+    channel.queue_declare(queue=settings.RABBITMQ_QUEUE, durable=True)
     channel.queue_bind(
-        queue=settings.rabbitmq_consume_queue,
-        exchange=settings.rabbitmq_exchange,
-        routing_key=settings.rabbitmq_consume_routing_key
+        queue=settings.RABBITMQ_QUEUE,
+        exchange=settings.RABBITMQ_EXCHANGE,
+        routing_key=settings.RABBITMQ_ROUTING_KEY_SPLIT,
     )
-    log.info(f"Waiting for messages on exchange '{settings.rabbitmq_exchange}' with routing key '{settings.rabbitmq_consume_routing_key}'...")
+    client = Client(
+        host=settings.CLICKHOUSE_HOST,
+        port=settings.CLICKHOUSE_PORT,
+        user=settings.CLICKHOUSE_USER,
+        password=settings.CLICKHOUSE_PASSWORD,
+        database=settings.CLICKHOUSE_DB,
+    )
+    log.info("Ожидание сообщений с разбиениями для запуска ML pipeline...")
 
-    # Start consuming messages
-    consume_rabbit(
-        client=client,
-        clickhouse_db=settings.clickhouse_db,
-        channel=channel,
-        consume_queue=settings.rabbitmq_consume_queue,
-        exchange=settings.rabbitmq_exchange,
-        publish_queue=settings.rabbitmq_publish_queue,
-        output_dir=settings.output_dir
-    )
+    def callback(ch, method, properties, body):
+        handle_message(body, ch, method, settings, client)
+
+    channel.basic_consume(queue=settings.RABBITMQ_QUEUE, on_message_callback=callback)
+    channel.start_consuming()
+
 
 if __name__ == "__main__":
     main()

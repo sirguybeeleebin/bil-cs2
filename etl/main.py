@@ -1,82 +1,61 @@
-import os
+import argparse
 import json
 import logging
-import argparse
-from datetime import datetime
-from dateutil.parser import parse
+import os
 from collections import defaultdict
-from typing import Generator, Any, List, Optional
 from pathlib import Path
-from clickhouse_driver import Client
-from pydantic_settings import BaseSettings, SettingsConfigDict
-import pika
+from typing import Any, Generator, List, Optional
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+import pika
+from clickhouse_driver import Client
+from dateutil.parser import parse
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
 log = logging.getLogger(__name__)
 
 
-
-
 class Settings(BaseSettings):
-    # ================= ClickHouse =================
-    clickhouse_host: str = "localhost"
-    clickhouse_port: int = 9000
-    clickhouse_user: str = "cs2_user"
-    clickhouse_password: str = "cs2_password"
-    clickhouse_db: str = "cs2_db"
+    CLICKHOUSE_HOST: str = "localhost"
+    CLICKHOUSE_PORT: int = 9000
+    CLICKHOUSE_USER: str = "cs2_user"
+    CLICKHOUSE_PASSWORD: str = "cs2_password"
+    CLICKHOUSE_DB: str = "cs2_db"
+    CLICKHOUSE_DROP_TABLE: bool = True
 
-    # ================= RabbitMQ =================
-    rabbitmq_url: str = "amqp://guest:guest@localhost:5672/%2F"
-    rabbitmq_exchange: str = "cs2"  # общий exchange для всех событий
-    rabbitmq_exchange_type: str = "direct"
+    RABBITMQ_USER: str = "cs2_user"
+    RABBITMQ_PASSWORD: str = "cs2_password"
+    RABBITMQ_HOST: str = "localhost"
+    RABBITMQ_AMQP_PORT: int = 5672
+    RABBITMQ_EXCHANGE: str = "cs2_exchange"
+    RABBITMQ_EXCHANGE_TYPE: str = "direct"
+    RABBITMQ_ROUTING_KEY_ETL: str = "cs2.etl_completed"
 
-    # ETL
-    rabbitmq_queue_etl: str = "cs2.etl_consumer"
-    rabbitmq_routing_key_etl: str = "cs2.etl_completed"
+    PATH_TO_GAMES_RAW_DIR: str = "data/games_raw"
 
-    # Train/Test Split
-    rabbitmq_queue_split: str = "cs2.split_consumer"
-    rabbitmq_routing_key_split: str = "cs2.split_created"
+    @property
+    def RABBITMQ_URL(self) -> str:
+        return f"amqp://{self.RABBITMQ_USER}:{self.RABBITMQ_PASSWORD}@{self.RABBITMQ_HOST}:{self.RABBITMQ_AMQP_PORT}/%2F"
 
-    # ML pipeline
-    rabbitmq_queue_ml: str = "cs2.ml_consumer"
-    rabbitmq_routing_key_ml: str = "cs2.ml_completed"
-
-    # ================= Other =================
-    output_dir: str = "data/train_test_splits"
-
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-    )
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 
-
-def _get_settings() -> Settings:
-    parser = argparse.ArgumentParser(description="ETL JSON games into ClickHouse.")
-    parser.add_argument("--env-file", type=str, default=".env")
-    args = parser.parse_args()
-
-    env_path = Path(args.env_file)
-    if env_path.exists():
-        log.info(f"Loading configuration from {env_path}")
-        return Settings(_env_file=env_path)
-    log.warning(f"Env file not found at {env_path}, using defaults")
-    return Settings()
-
-
-def _generate_game_raw(path_to_games_raw_dir: str) -> Generator[dict[str, Any], None, None]:
-    """Генератор для чтения JSON файлов с сырыми играми."""
-    for filename in os.listdir(path_to_games_raw_dir):
+def generate_game_raw(
+    path_to_games_raw_dir: str,
+) -> Generator[dict[str, Any], None, None]:
+    for filename in os.listdir(path_to_games_raw_dir)[:1000]:
         try:
-            with open(os.path.join(path_to_games_raw_dir, filename), "r", encoding="utf-8") as f:
+            with open(
+                os.path.join(path_to_games_raw_dir, filename), "r", encoding="utf-8"
+            ) as f:
                 yield json.load(f)
         except Exception as e:
-            log.warning(f"Error reading file {filename}: {e}")
+            log.warning(f"Ошибка чтения файла {filename}: {e}")
 
 
-def _flatten_game_raw(game_raw: dict) -> Optional[List[dict]]:
-    """Флаттенинг JSON игры в список записей для ClickHouse."""
+def flatten_game_raw(game_raw: dict) -> Optional[List[dict]]:
     try:
         game_flatten = {
             "game_id": int(game_raw["id"]),
@@ -84,7 +63,9 @@ def _flatten_game_raw(game_raw: dict) -> Optional[List[dict]]:
             "map_id": int(game_raw["map"]["id"]),
             "league_id": int(game_raw["match"]["league"]["id"]),
             "serie_id": int(game_raw["match"]["serie"]["id"]),
-            "tier_id": {"s": 1, "a": 2, "b": 3, "c": 4, "d": 5}.get(game_raw["match"]["serie"].get("tier"), 0),
+            "tier_id": {"s": 1, "a": 2, "b": 3, "c": 4, "d": 5}.get(
+                game_raw["match"]["serie"].get("tier"), 0
+            ),
             "tournament_id": int(game_raw["match"]["tournament"]["id"]),
         }
 
@@ -122,34 +103,48 @@ def _flatten_game_raw(game_raw: dict) -> Optional[List[dict]]:
             p_opp_ids = team_players[t_opp_id]
 
             for r in game_raw.get("rounds", []):
-                if not all(k in r for k in ("ct", "terrorists", "winner_team", "round")):
+                if not all(
+                    k in r for k in ("ct", "terrorists", "winner_team", "round")
+                ):
                     continue
-                if r["ct"] not in [t1_id, t2_id] or r["terrorists"] not in [t1_id, t2_id] or r["winner_team"] not in [t1_id, t2_id]:
+                if (
+                    r["ct"] not in [t1_id, t2_id]
+                    or r["terrorists"] not in [t1_id, t2_id]
+                    or r["winner_team"] not in [t1_id, t2_id]
+                ):
                     continue
 
                 for p_id in p_ids:
                     for p_opp_id in p_opp_ids:
                         rec = game_flatten.copy()
                         rec.update(player_stat.get(p_id, {}))
-                        rec.update({
-                            "team_id": t_id,
-                            "team_opponent_id": t_opp_id,
-                            "player_id": p_id,
-                            "player_opponent_id": p_opp_id,
-                            "round_id": int(r["round"]),
-                            "round_outcome_id": int({"eliminated": 1, "defused": 2, "exploded": 3, "timeout": 4}.get(r.get("outcome"), 0)),
-                            "round_is_ct": int(r["ct"] == t_id),
-                            "round_win": int(r["winner_team"] == t_id)
-                        })
+                        rec.update(
+                            {
+                                "team_id": t_id,
+                                "team_opponent_id": t_opp_id,
+                                "player_id": p_id,
+                                "player_opponent_id": p_opp_id,
+                                "round_id": int(r["round"]),
+                                "round_outcome_id": int(
+                                    {
+                                        "eliminated": 1,
+                                        "defused": 2,
+                                        "exploded": 3,
+                                        "timeout": 4,
+                                    }.get(r.get("outcome"), 0)
+                                ),
+                                "round_is_ct": int(r["ct"] == t_id),
+                                "round_win": int(r["winner_team"] == t_id),
+                            }
+                        )
                         records.append(rec)
         return records or None
     except Exception as e:
-        log.warning(f"Error flattening game {game_raw.get('id')}: {e}")
+        log.warning(f"Ошибка обработки игры {game_raw.get('id')}: {e}")
         return None
 
 
-def _create_table(client: Client, drop: bool = False):
-    """Создание таблицы ClickHouse, опционально удаляя старую."""
+def create_table(client: Client, drop: bool = True):
     if drop:
         client.execute("DROP TABLE IF EXISTS cs2_db.games_flatten")
     ddl = """
@@ -188,8 +183,9 @@ def _create_table(client: Client, drop: bool = False):
     client.execute(ddl)
 
 
-def _insert_games_flat(client: Client, records: List[dict], table: str = "games_flatten"):
-    """Вставка записей в ClickHouse."""
+def insert_games_flat(
+    client: Client, records: List[dict], table: str = "games_flatten"
+):
     if not records:
         return
     columns = list(records[0].keys())
@@ -197,89 +193,100 @@ def _insert_games_flat(client: Client, records: List[dict], table: str = "games_
     client.execute(f"INSERT INTO {table} ({', '.join(columns)}) VALUES", values)
 
 
-def _publish_event(channel, exchange: str, routing_key: str, payload: dict):
-    """Публикация события через уже настроенный канал."""
+def get_settings() -> Settings:
+    parser = argparse.ArgumentParser(description="ETL JSON games into ClickHouse.")
+    parser.add_argument("--env-file", type=str, default=".env")
+    args = parser.parse_args()
+    env_path = Path(args.env_file)
+    if env_path.exists():
+        log.info(f"Загрузка конфигурации из {env_path}")
+        return Settings(_env_file=env_path)
+    log.warning(f"Файл env не найден в {env_path}, используются значения по умолчанию")
+    return Settings()
+
+
+def get_all_game_ids(client: Client) -> list[int]:
+    return [
+        int(row[0])
+        for row in client.execute(
+            "SELECT DISTINCT game_id FROM games_flatten ORDER BY begin_at ASC"
+        )
+    ]
+
+
+def main():
+    settings = get_settings()
+
+    client = Client(
+        host=settings.CLICKHOUSE_HOST,
+        port=settings.CLICKHOUSE_PORT,
+        user=settings.CLICKHOUSE_USER,
+        password=settings.CLICKHOUSE_PASSWORD,
+        database=settings.CLICKHOUSE_DB,
+    )
+
     try:
-        message = json.dumps(payload)
-        channel.basic_publish(exchange=exchange, routing_key=routing_key, body=message)
-        log.info(f"Event published: {payload}")
-    except Exception as e:
-        log.error(f"Failed to publish event: {e}")
+        create_table(client, drop=settings.CLICKHOUSE_DROP_TABLE)
+    except Exception:
+        log.exception("Ошибка при создании таблицы ClickHouse")
+        return
 
+    total_records = 0
 
-# ==================== ETL ====================
-def process_game_raws(client: Client, channel_rabbit, path_to_games_raw_dir: str, drop_table: bool, settings: Settings):
-    _create_table(client, drop=drop_table)
-    total, success, error, total_inserted = 0, 0, 0, 0
-
-    for game_raw in _generate_game_raw(path_to_games_raw_dir):
-        total += 1
-        flat_records = _flatten_game_raw(game_raw)
+    for game_raw in generate_game_raw(settings.PATH_TO_GAMES_RAW_DIR):
+        flat_records = flatten_game_raw(game_raw)
         if flat_records:
             try:
-                _insert_games_flat(client, flat_records)
-                inserted_count = len(flat_records)
-                total_inserted += inserted_count
-                success += 1
-                log.info(f"Inserted {inserted_count} rows for game_id {flat_records[0]['game_id']}")
-            except Exception as e:
-                error += 1
-                log.error(f"Error inserting game {flat_records[0].get('game_id')}: {e}")
-        else:
-            error += 1
+                insert_games_flat(client, flat_records)
+            except Exception:
+                log.exception("Ошибка при вставке записей в ClickHouse")
+                return
+            total_records += len(flat_records)
 
-        log.info(f"Progress: total={total}, success={success}, error={error}, total_inserted={total_inserted}")
+    log.info(f"В ClickHouse вставлено {total_records} записей")
 
-    # Публикация события
-    if channel_rabbit:
-        payload = {
-            "event": "etl.completed",
-            "total_games": total,
-            "success_games": success,
-            "failed_games": error,
-            "total_rows_inserted": total_inserted,
-            "timestamp": datetime.now().isoformat(),
-        }
-        _publish_event(channel_rabbit, settings.rabbitmq_exchange, settings.rabbitmq_routing_key, payload)
+    # --- Query distinct game_ids ordered by begin_at ---
+    try:
+        processed_game_ids = get_all_game_ids()
+        log.info(f"Всего уникальных игр: {len(processed_game_ids)}")
+        log.info(f"Первые 10 game_id по begin_at: {processed_game_ids[:10]}")
+    except Exception:
+        log.exception("Ошибка при выборке game_id из ClickHouse")
+        return
 
+    # --- Publish message to RabbitMQ ---
+    connection = None
+    try:
+        credentials = pika.PlainCredentials(
+            settings.RABBITMQ_USER, settings.RABBITMQ_PASSWORD
+        )
+        parameters = pika.ConnectionParameters(
+            host=settings.RABBITMQ_HOST,
+            port=settings.RABBITMQ_AMQP_PORT,
+            credentials=credentials,
+        )
+        connection = pika.BlockingConnection(parameters)
+        channel = connection.channel()
+        channel.exchange_declare(
+            exchange=settings.RABBITMQ_EXCHANGE,
+            exchange_type=settings.RABBITMQ_EXCHANGE_TYPE,
+            durable=True,
+        )
 
-# ==================== Main ====================
-def main():
-    settings = _get_settings()
-
-    # ClickHouse client
-    client = Client(
-        host=settings.clickhouse_host,
-        port=settings.clickhouse_port,
-        user=settings.clickhouse_user,
-        password=settings.clickhouse_password,
-        database=settings.clickhouse_db,
-    )
-    log.info("Connected to ClickHouse")
-
-    # RabbitMQ connection & channel
-    params = pika.URLParameters(settings.rabbitmq_url)
-    connection = pika.BlockingConnection(params)
-    channel_rabbit = connection.channel()
-    channel_rabbit.exchange_declare(
-        exchange=settings.rabbitmq_exchange,
-        exchange_type=settings.rabbitmq_exchange_type,
-        durable=True
-    )
-    # Queue из settings
-    channel_rabbit.queue_declare(queue=settings.rabbitmq_queue, durable=True)
-    channel_rabbit.queue_bind(
-        queue=settings.rabbitmq_queue,
-        exchange=settings.rabbitmq_exchange,
-        routing_key=settings.rabbitmq_routing_key
-    )
-    log.info("Connected to RabbitMQ")
-
-    # Запуск ETL
-    process_game_raws(client, channel_rabbit, settings.path_to_games_raw_dir, False, settings)
-
-    connection.close()
-    log.info("Process finished")
+        message = {"processed_games": processed_game_ids}
+        channel.basic_publish(
+            exchange=settings.RABBITMQ_EXCHANGE,
+            routing_key=settings.RABBITMQ_ROUTING_KEY_ETL,
+            body=str(message),
+        )
+        log.info(
+            f"Сообщение ETL опубликовано в {settings.RABBITMQ_ROUTING_KEY_ETL}: {message}"
+        )
+    except Exception:
+        log.exception("Ошибка при публикации сообщения RabbitMQ")
+    finally:
+        if connection and connection.is_open:
+            connection.close()
 
 
 if __name__ == "__main__":
