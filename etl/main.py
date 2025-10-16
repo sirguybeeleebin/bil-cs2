@@ -276,7 +276,7 @@ def main():
     log.info("Connected to RabbitMQ")
 
     # Запуск ETL
-    process_game_raws(client, channel_rabbit, settings.path_to_games_raw_dir, settings.drop_table, settings)
+    process_game_raws(client, channel_rabbit, settings.path_to_games_raw_dir, False, settings)
 
     connection.close()
     log.info("Process finished")
