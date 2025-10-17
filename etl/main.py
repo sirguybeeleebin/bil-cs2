@@ -23,29 +23,17 @@ class Settings(BaseSettings):
     CLICKHOUSE_USER: str = "cs2_user"
     CLICKHOUSE_PASSWORD: str = "cs2_password"
     CLICKHOUSE_DB: str = "cs2_db"
-    CLICKHOUSE_DROP_TABLE: bool = True
+    CLICKHOUSE_DROP_TABLE: bool = True    
 
-    RABBITMQ_USER: str = "cs2_user"
-    RABBITMQ_PASSWORD: str = "cs2_password"
-    RABBITMQ_HOST: str = "localhost"
-    RABBITMQ_AMQP_PORT: int = 5672
-    RABBITMQ_EXCHANGE: str = "cs2_exchange"
-    RABBITMQ_EXCHANGE_TYPE: str = "direct"
-    RABBITMQ_ROUTING_KEY_ETL: str = "cs2.etl_completed"
+    PATH_TO_GAMES_RAW_DIR: str = "data/games_raw"    
 
-    PATH_TO_GAMES_RAW_DIR: str = "data/games_raw"
-
-    @property
-    def RABBITMQ_URL(self) -> str:
-        return f"amqp://{self.RABBITMQ_USER}:{self.RABBITMQ_PASSWORD}@{self.RABBITMQ_HOST}:{self.RABBITMQ_AMQP_PORT}/%2F"
-
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="allow")
 
 
 def generate_game_raw(
     path_to_games_raw_dir: str,
 ) -> Generator[dict[str, Any], None, None]:
-    for filename in os.listdir(path_to_games_raw_dir)[:1000]:
+    for filename in os.listdir(path_to_games_raw_dir):
         try:
             with open(
                 os.path.join(path_to_games_raw_dir, filename), "r", encoding="utf-8"
@@ -77,16 +65,16 @@ def flatten_game_raw(game_raw: dict) -> Optional[List[dict]]:
             player_id = p["player"]["id"]
             team_players[team_id].append(player_id)
             player_stat[player_id] = {
-                "kills": p.get("kills", 0),
-                "deaths": p.get("deaths", 0),
-                "assists": p.get("assists", 0),
-                "headshots": p.get("headshots", 0),
-                "flash_assists": p.get("flash_assists", 0),
-                "first_kills_diff": p.get("first_kills_diff", 0),
-                "k_d_diff": p.get("k_d_diff", 0),
-                "adr": p.get("adr", 0),
-                "kast": p.get("kast", 0),
-                "rating": p.get("rating", 0),
+                "kills": int(p.get("kills", 0)),
+                "deaths": int(p.get("deaths", 0)),
+                "assists": int(p.get("assists", 0)),
+                "headshots": int(p.get("headshots", 0)),
+                "flash_assists": int(p.get("flash_assists", 0)),
+                "first_kills_diff": int(p.get("first_kills_diff", 0)),
+                "k_d_diff": int(p.get("k_d_diff", 0)),
+                "adr": float(p.get("adr", 0)),
+                "kast": float(p.get("kast", 0)),
+                "rating": float(p.get("rating", 0)),
             }
 
         if len(team_players) != 2:
@@ -181,6 +169,143 @@ def create_table(client: Client, drop: bool = True):
     ORDER BY (begin_at, game_id, player_id, map_id, league_id, serie_id, tier_id, tournament_id, team_id, team_opponent_id, player_opponent_id, round_id);
     """
     client.execute(ddl)
+    
+    ddl2 = """
+    CREATE VIEW cs2_db.player_cumulative_view AS
+        SELECT
+            player_id,
+            begin_at,
+            game_id,
+            kills,
+            deaths,
+            assists,
+            headshots,
+            flash_assists,
+            adr,
+            kast,
+            rating,
+            k_d_diff,
+            first_kills_diff,
+            cumulative_kills,
+            cumulative_deaths,
+            cumulative_assists,
+            cumulative_headshots,
+            cumulative_flash_assists,
+            cumulative_game_count,
+            max_round_id,
+            -- Per-round ratios
+            cumulative_kills / max_round_id AS kills_per_round,
+            cumulative_deaths / max_round_id AS deaths_per_round,
+            cumulative_assists / max_round_id AS assists_per_round,
+            cumulative_headshots / max_round_id AS headshots_per_round,
+            cumulative_flash_assists / max_round_id AS flash_assists_per_round,
+            -- Per-game ratios
+            cumulative_kills / cumulative_game_count AS kills_per_game,
+            cumulative_deaths / cumulative_game_count AS deaths_per_game,
+            cumulative_assists / cumulative_game_count AS assists_per_game,
+            cumulative_headshots / cumulative_game_count AS headshots_per_game,
+            cumulative_flash_assists / cumulative_game_count AS flash_assists_per_game,
+            cumulative_adr / cumulative_game_count AS adr_per_game,
+            cumulative_kast / cumulative_game_count AS kast_per_game,
+            cumulative_rating / cumulative_game_count AS rating_per_game,
+            cumulative_k_d_diff / cumulative_game_count AS k_d_diff_per_game,
+            cumulative_first_kills_diff / cumulative_game_count AS first_kills_diff_per_game
+        FROM
+        (
+            SELECT
+                player_id,
+                begin_at,
+                game_id,
+                kills,
+                deaths,
+                assists,
+                headshots,
+                flash_assists,
+                adr,
+                kast,
+                rating,
+                k_d_diff,
+                first_kills_diff,
+                max_round_id,
+                SUM(kills) OVER (
+                    PARTITION BY player_id
+                    ORDER BY begin_at ASC
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS cumulative_kills,
+                SUM(deaths) OVER (
+                    PARTITION BY player_id
+                    ORDER BY begin_at ASC
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS cumulative_deaths,
+                SUM(assists) OVER (
+                    PARTITION BY player_id
+                    ORDER BY begin_at ASC
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS cumulative_assists,
+                SUM(headshots) OVER (
+                    PARTITION BY player_id
+                    ORDER BY begin_at ASC
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS cumulative_headshots,
+                SUM(flash_assists) OVER (
+                    PARTITION BY player_id
+                    ORDER BY begin_at ASC
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS cumulative_flash_assists,
+                SUM(adr) OVER (
+                    PARTITION BY player_id
+                    ORDER BY begin_at ASC
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS cumulative_adr,
+                SUM(kast) OVER (
+                    PARTITION BY player_id
+                    ORDER BY begin_at ASC
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS cumulative_kast,
+                SUM(rating) OVER (
+                    PARTITION BY player_id
+                    ORDER BY begin_at ASC
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS cumulative_rating,
+                SUM(k_d_diff) OVER (
+                    PARTITION BY player_id
+                    ORDER BY begin_at ASC
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS cumulative_k_d_diff,
+                SUM(first_kills_diff) OVER (
+                    PARTITION BY player_id
+                    ORDER BY begin_at ASC
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS cumulative_first_kills_diff,
+                COUNT(*) OVER (
+                    PARTITION BY player_id
+                    ORDER BY begin_at ASC
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS cumulative_game_count
+            FROM
+            (
+                SELECT
+                    player_id,
+                    begin_at,
+                    game_id,
+                    AVG(kills) AS kills,
+                    AVG(deaths) AS deaths,
+                    AVG(assists) AS assists,
+                    AVG(headshots) AS headshots,
+                    AVG(flash_assists) AS flash_assists,
+                    AVG(adr) AS adr,
+                    AVG(kast) AS kast,
+                    AVG(rating) AS rating,
+                    AVG(k_d_diff) AS k_d_diff,
+                    AVG(first_kills_diff) AS first_kills_diff,
+                    MAX(round_id) AS max_round_id
+                FROM cs2_db.games_flatten
+                GROUP BY player_id, begin_at, game_id
+            ) AS subquery
+        ) AS cumulative_data
+        ORDER BY player_id, begin_at;
+    """
+    client.execute(ddl)
 
 
 def insert_games_flat(
@@ -245,48 +370,7 @@ def main():
 
     log.info(f"В ClickHouse вставлено {total_records} записей")
 
-    # --- Query distinct game_ids ordered by begin_at ---
-    try:
-        processed_game_ids = get_all_game_ids()
-        log.info(f"Всего уникальных игр: {len(processed_game_ids)}")
-        log.info(f"Первые 10 game_id по begin_at: {processed_game_ids[:10]}")
-    except Exception:
-        log.exception("Ошибка при выборке game_id из ClickHouse")
-        return
-
-    # --- Publish message to RabbitMQ ---
-    connection = None
-    try:
-        credentials = pika.PlainCredentials(
-            settings.RABBITMQ_USER, settings.RABBITMQ_PASSWORD
-        )
-        parameters = pika.ConnectionParameters(
-            host=settings.RABBITMQ_HOST,
-            port=settings.RABBITMQ_AMQP_PORT,
-            credentials=credentials,
-        )
-        connection = pika.BlockingConnection(parameters)
-        channel = connection.channel()
-        channel.exchange_declare(
-            exchange=settings.RABBITMQ_EXCHANGE,
-            exchange_type=settings.RABBITMQ_EXCHANGE_TYPE,
-            durable=True,
-        )
-
-        message = {"processed_games": processed_game_ids}
-        channel.basic_publish(
-            exchange=settings.RABBITMQ_EXCHANGE,
-            routing_key=settings.RABBITMQ_ROUTING_KEY_ETL,
-            body=str(message),
-        )
-        log.info(
-            f"Сообщение ETL опубликовано в {settings.RABBITMQ_ROUTING_KEY_ETL}: {message}"
-        )
-    except Exception:
-        log.exception("Ошибка при публикации сообщения RabbitMQ")
-    finally:
-        if connection and connection.is_open:
-            connection.close()
+    
 
 
 if __name__ == "__main__":
