@@ -1,402 +1,357 @@
-import argparse
-import ast
-import hashlib
+import os
 import json
-import logging
-import pickle
-from datetime import datetime, timezone
-from functools import partial
-from multiprocessing import Pool, cpu_count
-from pathlib import Path
-
+from dateutil.parser import parse
+from collections import defaultdict
 import numpy as np
-import pika
-from clickhouse_driver import Client
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from tqdm.notebook import tqdm
+from sklearn.base import BaseEstimator, TransformerMixin, clone
 from scipy import sparse
-from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline, FeatureUnion
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import (
-    accuracy_score,
-    confusion_matrix,
-    f1_score,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
 from sklearn.model_selection import TimeSeriesSplit
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
+from sklearn.utils import shuffle
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
+import hashlib
+import pickle
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
-)
-log = logging.getLogger(__name__)
+# ----------------------- Data loading -----------------------
+def generate_game_raw(path_to_games_raw_dir: str = "data/games_raw"):
+    for filename in tqdm(os.listdir(path_to_games_raw_dir)):
+        file_path = os.path.join(path_to_games_raw_dir, filename)
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                yield json.load(f)
+        except:
+            continue
 
+def validate_game(game: dict) -> bool:
+    try:
+        int(game["id"])
+        parse(game["begin_at"])
+        int(game["match"]["league"]["id"])
+        int(game["match"]["serie"]["id"])
+        int(game["match"]["tournament"]["id"])
+        int(game["map"]["id"])
+        team_players = defaultdict(list)
+        for p in game["players"]:
+            team_players[p["team"]["id"]].append(p["player"]["id"])
+        if len(team_players) != 2:
+            return False
+        for p_ids in team_players.values():
+            if len(set(p_ids)) != 5:
+                return False
+        team_ids = list(team_players.keys())
+        rounds = []
+        for r in game["rounds"]:
+            if r["round"] is None or r["ct"] not in team_ids or r["terrorists"] not in team_ids or r["winner_team"] not in team_ids:
+                return False
+            rounds.append(r["round"])
+        if min(rounds) != 1 or max(rounds) < 16:
+            return False
+        return True
+    except:
+        return False
 
-class Settings(BaseSettings):
-    CLICKHOUSE_HOST: str = "localhost"
-    CLICKHOUSE_PORT: int = 9000
-    CLICKHOUSE_HTTP_PORT: int = 8123
-    CLICKHOUSE_USER: str = "cs2_user"
-    CLICKHOUSE_PASSWORD: str = "cs2_password"
-    CLICKHOUSE_DB: str = "cs2_db"
-    RABBITMQ_USER: str = "cs2_user"
-    RABBITMQ_PASSWORD: str = "cs2_password"
-    RABBITMQ_HOST: str = "localhost"
-    RABBITMQ_AMQP_PORT: int = 5672
-    RABBITMQ_MANAGEMENT_PORT: int = 15672
-    RABBITMQ_EXCHANGE: str = "cs2_exchange"
-    RABBITMQ_EXCHANGE_TYPE: str = "direct"
-    RABBITMQ_QUEUE: str = "cs2_queue"
-    RABBITMQ_ROUTING_KEY_ETL: str = "cs2.etl_completed"
-    RABBITMQ_ROUTING_KEY_SPLIT: str = "cs2.split_created"
-    RABBITMQ_ROUTING_KEY_ML: str = "cs2.ml_completed"
-    OUTPUT_DIR_RAW_SPLITS: str = "data/train_test_splits"
-    OUTPUT_DIR_ML: str = "data/ml"
-    PATH_TO_GAMES_RAW_DIR: str = "data/games_raw"
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+def get_game_ids(path_to_games_raw_dir: str = "data/games_raw") -> list[int]:
+    game_ids_valid, game_begin_at_valid = [], []
+    for game in generate_game_raw(path_to_games_raw_dir):
+        if validate_game(game):
+            game_ids_valid.append(game["id"])
+            game_begin_at_valid.append(parse(game["begin_at"]))
+    return np.array(game_ids_valid)[np.argsort(game_begin_at_valid)].tolist()
 
+def get_X_y(path_to_games_raw: str, game_ids: list[int]):
+    X, y = [], []
+    for game_id in tqdm(game_ids):
+        file_path = os.path.join(path_to_games_raw, f"{game_id}.json")
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                game = json.load(f)
+            team_players = defaultdict(list)
+            for p in game["players"]:
+                team_players[p["team"]["id"]].append(p["player"]["id"])
+            t1_id, t2_id = sorted(team_players.keys())
+            X.append([t1_id, t2_id] + sorted(team_players[t1_id]) + sorted(team_players[t2_id]))
+            team_win_count = {t1_id: 0, t2_id: 0}
+            for r in game["rounds"]:
+                team_win_count[r["winner_team"]] += 1
+            y.append(int(team_win_count[t1_id] > team_win_count[t2_id]))
+        except:
+            continue
+    return np.array(X), np.array(y)
 
-def fetch_games_by_ids(client: Client, game_ids, clickhouse_db="cs2_db"):
-    if not game_ids:
-        log.warning("Список game_ids пуст. Возвращаю пустые массивы.")
-        return np.array([]), np.array([])
-    log.info(f"Получение данных для {len(game_ids)} игр из ClickHouse...")
-    ids_str = ",".join(str(i) for i in game_ids)
-    query = f"""
-    SELECT
-        g.game_id,
-        any(g.begin_at) AS timestamp,
-        any(g.map_id) AS map_id,
-        any(g.league_id) AS league_id,
-        any(g.serie_id) AS serie_id,
-        any(g.tournament_id) AS tournament_id,
-        any(g.tier_id) AS tier_id,
-        t.teams[1] AS t1_id,
-        t.teams[2] AS t2_id,
-        arrayElement(arraySlice(arraySort(arrayDistinct(groupArrayIf(player_id, team_id = t.teams[1]))), 1, 5), 1) AS p1_id,
-        arrayElement(arraySlice(arraySort(arrayDistinct(groupArrayIf(player_id, team_id = t.teams[1]))), 1, 5), 2) AS p2_id,
-        arrayElement(arraySlice(arraySort(arrayDistinct(groupArrayIf(player_id, team_id = t.teams[1]))), 1, 5), 3) AS p3_id,
-        arrayElement(arraySlice(arraySort(arrayDistinct(groupArrayIf(player_id, team_id = t.teams[1]))), 1, 5), 4) AS p4_id,
-        arrayElement(arraySlice(arraySort(arrayDistinct(groupArrayIf(player_id, team_id = t.teams[1]))), 1, 5), 5) AS p5_id,
-        arrayElement(arraySlice(arraySort(arrayDistinct(groupArrayIf(player_id, team_id = t.teams[2]))), 1, 5), 1) AS p6_id,
-        arrayElement(arraySlice(arraySort(arrayDistinct(groupArrayIf(player_id, team_id = t.teams[2]))), 1, 5), 2) AS p7_id,
-        arrayElement(arraySlice(arraySort(arrayDistinct(groupArrayIf(player_id, team_id = t.teams[2]))), 1, 5), 3) AS p8_id,
-        arrayElement(arraySlice(arraySort(arrayDistinct(groupArrayIf(player_id, team_id = t.teams[2]))), 1, 5), 4) AS p9_id,
-        arrayElement(arraySlice(arraySort(arrayDistinct(groupArrayIf(player_id, team_id = t.teams[2]))), 1, 5), 5) AS p10_id,
-        sumIf(g.round_win, g.team_id = t.teams[1]) > sumIf(g.round_win, g.team_id = t.teams[2]) AS team1_win
-    FROM {clickhouse_db}.games_flatten AS g
-    INNER JOIN (
-        SELECT
-            game_id,
-            arraySort(arrayDistinct(groupArray(team_id))) AS teams
-        FROM {clickhouse_db}.games_flatten
-        WHERE game_id IN ({ids_str})
-        GROUP BY game_id
-    ) AS t USING (game_id)
-    GROUP BY g.game_id, t.teams
-    ORDER BY timestamp ASC
-    """
-    result = client.execute(query, with_column_types=True)
-    if not result:
-        log.warning("Запрос вернул пустой результат.")
-        return np.array([]), np.array([])
-    rows = [list(r) for r in result[0]]
-    for row in rows:
-        if hasattr(row[1], "timestamp"):
-            row[1] = row[1].timestamp()
-    X = np.array([r[1:-1] for r in rows], dtype=float)
-    y = np.array([r[-1] for r in rows], dtype=int)
-    log.info(f"Получено {len(X)} строк с {X.shape[1]} признаками.")
-    return X, y
+# ----------------------- Column selector -----------------------
+class ColumnSelector(BaseEstimator, TransformerMixin):   
+    def __init__(self, columns):
+        self.columns = columns
 
-
-class TeamBagEncoder(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
-        X = np.asarray(X)
-        self.d = {val: idx for idx, val in enumerate(np.unique(X.flatten()))}
-        log.info(f"TeamBagEncoder: найдено {len(self.d)} уникальных команд.")
         return self
 
     def transform(self, X):
         X = np.asarray(X)
+        return X[:, self.columns]
+
+# ----------------------- Bag encoders -----------------------
+class PlayerBagEncoder(BaseEstimator, TransformerMixin):   
+    def __init__(self):
+        self.player_dict = None
+
+    def fit(self, X, y=None):      
+        X = np.asarray(X)
+        uniques = np.unique(X.flatten())
+        self.player_dict = {player: idx for idx, player in enumerate(uniques)}
+        return self
+
+    def transform(self, X):        
+        X = np.asarray(X)
+        n_samples = X.shape[0]
+        n_features = len(self.player_dict)
         rows, cols, data = [], [], []
+
         for i, row in enumerate(X):
-            for j, val in enumerate(row):
-                if val in self.d:
+            for j, player in enumerate(row):
+                col_idx = self.player_dict.get(player)
+                if col_idx is not None:
                     rows.append(i)
-                    cols.append(self.d[val])
+                    cols.append(col_idx)
+                    data.append(1 if j < len(row)//2 else -1)
+
+        return sparse.csr_matrix((data, (rows, cols)), shape=(n_samples, n_features), dtype=int)
+
+class TeamBagEncoder(BaseEstimator, TransformerMixin):   
+    def __init__(self):
+        self.team_dict = None
+
+    def fit(self, X, y=None):      
+        X = np.asarray(X)
+        uniques = np.unique(X.flatten())
+        self.team_dict = {team: idx for idx, team in enumerate(uniques)}
+        return self
+
+    def transform(self, X):        
+        X = np.asarray(X)
+        n_samples = X.shape[0]
+        n_features = len(self.team_dict)
+        rows, cols, data = [], [], []
+
+        for i, row in enumerate(X):            
+            for j, team in enumerate(row):
+                col_idx = self.team_dict.get(team)
+                if col_idx is not None:
+                    rows.append(i)
+                    cols.append(col_idx)
                     data.append(1 if j == 0 else -1)
-        return sparse.csr_matrix(
-            (data, (rows, cols)), shape=(X.shape[0], len(self.d)), dtype=int
-        )
 
+        return sparse.csr_matrix((data, (rows, cols)), shape=(n_samples, n_features), dtype=int)
 
-class PlayerBagEncoder(BaseEstimator, TransformerMixin):
-    def fit(self, X, y=None):
-        X = np.asarray(X)
-        self.d = {val: idx for idx, val in enumerate(np.unique(X.flatten()))}
-        log.info(f"PlayerBagEncoder: найдено {len(self.d)} уникальных игроков.")
-        return self
+from joblib import Parallel, delayed
+from tqdm.notebook import tqdm
+from tqdm_joblib import tqdm_joblib
+from sklearn.base import BaseEstimator, TransformerMixin, clone
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.utils import shuffle
+from scipy import sparse
+import numpy as np
+from sklearn.metrics import roc_auc_score
 
-    def transform(self, X):
-        X = np.asarray(X)
-        rows, cols, data = [], [], []
-        for i, row in enumerate(X):
-            for j, val in enumerate(row):
-                if val in self.d:
-                    rows.append(i)
-                    cols.append(self.d[val])
-                    data.append(1 if j < 5 else -1)
-        return sparse.csr_matrix(
-            (data, (rows, cols)), shape=(X.shape[0], len(self.d)), dtype=int
-        )
-
-
-class RecursiveFeatureSelector(BaseEstimator, TransformerMixin):
-    def __init__(self, random_state=42, cv_splits=10, n_repeats=1):
-        self.random_state = random_state
-        self.cv_splits = cv_splits
+class RecursiveTimeSeriesPermutationSelector(BaseEstimator, TransformerMixin):
+    def __init__(self, estimator, n_splits=10, n_repeats=1, scoring="roc_auc", random_state=42):
+        self.estimator = estimator
+        self.n_splits = n_splits
         self.n_repeats = n_repeats
-        self.selected_features_ = None
+        self.scoring = scoring  # kept for compatibility but always roc_auc
+        self.random_state = random_state
+        self.mask_ = None
 
-    def fit(self, X, y=None):
-        X = X if sparse.issparse(X) else np.asarray(X)
-        y = np.asarray(y)
-        selected_features = np.arange(X.shape[1])
+    def _perm_feature_score(self, est, X_val, y_val, i, rng):
+        perm_scores = []
+        for _ in range(self.n_repeats):
+            X_perm = X_val.toarray() if sparse.issparse(X_val) else X_val.copy()
+            seed = rng.randint(0, 2**32 - 1)
+            X_perm[:, i] = shuffle(X_perm[:, i], random_state=seed)
+            y_pred = est.predict_proba(X_perm)[:, 1]
+            perm_scores.append(roc_auc_score(y_val, y_pred))
+        return np.mean(perm_scores)
+
+    def fit(self, X, y):
+        if sparse.issparse(X):
+            X = X.tocsr()
+        else:
+            X = np.asarray(X)
+
+        mask_all = np.ones(X.shape[1], dtype=bool)
         iteration = 0
+        rng = np.random.RandomState(self.random_state)
+
         while True:
             iteration += 1
-            log.info(f"RFS итерация {iteration}, признаков={len(selected_features)}")
-            X_sel = X[:, selected_features]
-            tscv = TimeSeriesSplit(n_splits=self.cv_splits)
-            fold_importances = []
-            for tr_idx, val_idx in tscv.split(X_sel, y):
-                model = LogisticRegression(random_state=self.random_state)
-                model.fit(X_sel[tr_idx], y[tr_idx])
-                imp = self._permutation_importance(
-                    model, X_sel[val_idx], y[val_idx], self.n_repeats
-                )
-                fold_importances.append(imp)
-            avg_importance = {}
-            for imp in fold_importances:
-                for k, v in imp.items():
-                    avg_importance[k] = avg_importance.get(k, 0) + v / len(
-                        fold_importances
+            print(f"Iteration {iteration}: {mask_all.sum()} features")
+            importances_accum = np.zeros(mask_all.sum())
+            X_selected = X[:, mask_all]
+            tscv = TimeSeriesSplit(n_splits=self.n_splits)
+
+            for train_idx, val_idx in tscv.split(X_selected):
+                X_train, X_val = X_selected[train_idx], X_selected[val_idx]
+                y_train, y_val = y[train_idx], y[val_idx]
+
+                est = clone(self.estimator)
+                est.fit(X_train, y_train)
+                y_pred_orig = est.predict_proba(X_val)[:, 1]
+                score_orig = roc_auc_score(y_val, y_pred_orig)
+
+                # Parallel feature permutation with tqdm
+                with tqdm_joblib(tqdm(total=X_selected.shape[1], desc="Permuting features")):
+                    perm_scores = Parallel(n_jobs=-1)(
+                        delayed(self._perm_feature_score)(est, X_val, y_val, i, rng)
+                        for i in range(X_selected.shape[1])
                     )
-            non_zero_idx = np.array([k for k, v in avg_importance.items() if v > 0])
-            if len(non_zero_idx) == len(selected_features) or len(non_zero_idx) == 0:
+
+                importances_accum += score_orig - np.array(perm_scores)
+
+            importances_avg = importances_accum / self.n_splits
+            mask_iteration = importances_avg > 0
+            if mask_iteration.sum() == mask_all.sum():
                 break
-            selected_features = selected_features[non_zero_idx]
-        self.selected_features_ = selected_features
+            idx_remaining = np.where(mask_all)[0]
+            mask_all[idx_remaining[~mask_iteration]] = False
+
+        self.mask_ = mask_all
+        print(f"Final selected features: {mask_all.sum()} / {mask_all.size}")
         return self
 
     def transform(self, X):
-        if self.selected_features_ is None:
-            raise RuntimeError("RFS не обучен!")
-        return X[:, self.selected_features_]
+        if self.mask_ is None:
+            raise RuntimeError("You must fit before calling transform.")
+        return X[:, self.mask_] if sparse.issparse(X) else np.asarray(X)[:, self.mask_]
 
-    def _permutation_importance(self, model, X_val, y_val, n_repeats=5):
-        if sparse.issparse(X_val):
-            X_val = X_val.tocsr()
-        baseline = roc_auc_score(y_val, model.predict_proba(X_val)[:, 1])
-        pool = Pool(cpu_count())
-        func = partial(
-            perm_col_importance,
-            model=model,
-            X_val=X_val,
-            y_val=y_val,
-            baseline_score=baseline,
-            n_repeats=n_repeats,
-            rng_seed=self.random_state,
-        )
-        results = list(pool.imap(func, range(X_val.shape[1])))
-        pool.close()
-        pool.join()
-        return {col: score for col, score in results}
+    def fit_transform(self, X, y):
+        return self.fit(X, y).transform(X)
 
 
-def perm_col_importance(
-    col_idx, model, X_val, y_val, baseline_score, n_repeats, rng_seed
-):
-    rng = np.random.default_rng(rng_seed + col_idx)
-    scores = []
-    X_dense = X_val.toarray() if sparse.issparse(X_val) else X_val
-    for _ in range(n_repeats):
-        X_perm = X_dense.copy()
-        rng.shuffle(X_perm[:, col_idx])
-        scores.append(
-            baseline_score - roc_auc_score(y_val, model.predict_proba(X_perm)[:, 1])
-        )
-    return col_idx, np.mean(scores)
-
-
-def create_pipeline():
-    TIMESTAMP_IDX = 0
-    CATEGORICAL_IDX = [1, 2, 3, 4, 5]
-    TEAM_IDX = [6, 7]
-    PLAYER_IDX = list(range(8, 18))
-    preprocessor = ColumnTransformer(
-        [
-            ("timestamp", MinMaxScaler(), [TIMESTAMP_IDX]),
-            (
-                "categorical",
-                OneHotEncoder(handle_unknown="ignore", sparse_output=True),
-                CATEGORICAL_IDX,
-            ),
-            ("teams", TeamBagEncoder(), TEAM_IDX),
-            ("players", PlayerBagEncoder(), PLAYER_IDX),
-        ]
-    )
-    return Pipeline(
-        [
-            ("preprocessing", preprocessor),
-            ("feature_selection", RecursiveFeatureSelector()),
-            ("classifier", LogisticRegression(random_state=42, solver="liblinear")),
-        ]
-    )
-
-
-def get_metrics(y_true, y_proba, threshold=0.5):
-    y_pred = (y_proba >= threshold).astype(int)
+# ----------------------- Metrics -----------------------
+def get_metrics(y_true, y_pred, y_proba):
     acc = accuracy_score(y_true, y_pred)
-    prec = precision_score(y_true, y_pred, zero_division=0)
-    rec = recall_score(y_true, y_pred, zero_division=0)
-    f1 = f1_score(y_true, y_pred, zero_division=0)
+    prec = precision_score(y_true, y_pred)
+    rec = recall_score(y_true, y_pred)
+    f1 = f1_score(y_true, y_pred)
     auc = roc_auc_score(y_true, y_proba)
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+    
     return {
-        "accuracy": round(acc, 2),
-        "precision": round(prec, 2),
-        "recall": round(rec, 2),
-        "f1": round(f1, 2),
-        "auc": round(auc, 2),
-        "tp": int(tp),
-        "tn": int(tn),
-        "fp": int(fp),
-        "fn": int(fn),
+        "accuracy": acc,
+        "precision": prec,
+        "recall": rec,
+        "f1_score": f1,
+        "auc": auc,
+        "tp": tp,
+        "tn": tn,
+        "fp": fp,
+        "fn": fn
+    }
+    
+import os
+import argparse
+from dotenv import load_dotenv
+
+def get_settings():
+    """
+    Parse CLI arguments for .env file, load environment variables, 
+    and return settings for the pipeline.
+    """
+    parser = argparse.ArgumentParser(description="Load ML pipeline settings")
+    parser.add_argument(
+        "--env_file",
+        type=str,
+        default=".env",
+        help="Path to .env file containing environment variables"
+    )
+    args = parser.parse_args()
+
+    # Load .env file
+    if os.path.exists(args.env_file):
+        load_dotenv(args.env_file)
+    else:
+        print(f"Warning: .env file '{args.env_file}' not found. Using defaults or env vars.")
+
+    # Read settings from environment variables or set defaults
+    settings = {
+        "PATH_TO_GAMES_RAW_DIR": os.getenv("PATH_TO_GAMES_RAW_DIR", "data/games_raw"),
+        "TEST_SIZE": int(os.getenv("TEST_SIZE", 100)),
+        "PATH_TO_ML_RESULTS_DIR": os.getenv("PATH_TO_ML_RESULTS_DIR", "data/ml")
     }
 
+    # Ensure results directory exists
+    os.makedirs(settings["PATH_TO_ML_RESULTS_DIR"], exist_ok=True)
 
-def run_pipeline(client: Client, train_ids, test_ids, clickhouse_db):
-    X_train, y_train = fetch_games_by_ids(client, train_ids, clickhouse_db)
-    X_test, y_test = fetch_games_by_ids(client, test_ids, clickhouse_db)
-    if len(X_train) == 0 or len(X_test) == 0:
-        log.warning("Пустые данные train/test, пропуск выполнения pipeline.")
-        return None, None
-    pipeline = create_pipeline()
-    log.info("Обучение pipeline...")
-    pipeline.fit(X_train, y_train)
-    log.info("Pipeline обучен.")
-    y_proba = pipeline.predict_proba(X_test)[:, 1]
-    metrics = get_metrics(y_test, y_proba)
-    log.info(f"Метрики pipeline: {metrics}")
-    return pipeline, metrics
-
-
-def get_settings() -> Settings:
-    parser = argparse.ArgumentParser(description="ML consumer for split messages")
-    parser.add_argument("--env-file", type=str, default=".env")
-    args = parser.parse_args()
-    env_path = Path(args.env_file)
-    if env_path.exists():
-        log.info(f"Загрузка конфигурации из {env_path}")
-        return Settings(_env_file=env_path)
-    log.warning(f"Файл {env_path} не найден, используются настройки по умолчанию")
-    return Settings()
-
-
-def handle_message(body: bytes, channel, method, settings: Settings, client: Client):
-    try:
-        log.info(f"Получено сообщение с разбиением: {body.decode()}")
-        data = ast.literal_eval(body.decode())
-        train_ids = data.get("train", [])
-        test_ids = data.get("test", [])
-        if not train_ids and not test_ids:
-            log.warning("Пустое разбиение, пропуск обучения.")
-            return
-        log.info(
-            f"Запуск ML pipeline для {len(train_ids)} train и {len(test_ids)} test образцов."
-        )
-        pipeline, metrics = run_pipeline(
-            client, train_ids, test_ids, settings.CLICKHOUSE_DB
-        )
-        if pipeline is None:
-            log.warning("Pipeline пропущен из-за пустых данных.")
-            return
-        hash_input = ",".join(str(x) for x in train_ids + test_ids)
-        hash_id = hashlib.md5(hash_input.encode("utf-8")).hexdigest()
-        result = {
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "hash_id": hash_id,
-            "metrics": metrics,
-        }
-        output_dir = Path(settings.OUTPUT_DIR_ML)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        json_file = output_dir / f"{hash_id}.json"
-        with open(json_file, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-        model_file = output_dir / f"{hash_id}.pkl"
-        with open(model_file, "wb") as f:
-            pickle.dump(pipeline, f)
-        log.info(
-            f"Результаты ML сохранены: метрики — {json_file}, модель — {model_file}"
-        )
-        channel.basic_publish(
-            exchange=settings.RABBITMQ_EXCHANGE,
-            routing_key=settings.RABBITMQ_ROUTING_KEY_ML,
-            body=json.dumps(result),
-        )
-        log.info(
-            f"Сообщение о завершении ML отправлено: {settings.RABBITMQ_ROUTING_KEY_ML}"
-        )
-    except Exception as e:
-        log.exception(f"Ошибка при обработке сообщения: {e}")
-    finally:
-        if method:
-            channel.basic_ack(delivery_tag=method.delivery_tag)
-
+    return settings
 
 def main():
+    # ----------------------- Load settings -----------------------
     settings = get_settings()
-    credentials = pika.PlainCredentials(
-        settings.RABBITMQ_USER, settings.RABBITMQ_PASSWORD
-    )
-    parameters = pika.ConnectionParameters(
-        host=settings.RABBITMQ_HOST,
-        port=settings.RABBITMQ_AMQP_PORT,
-        credentials=credentials,
-    )
-    connection = pika.BlockingConnection(parameters)
-    channel = connection.channel()
-    channel.exchange_declare(
-        exchange=settings.RABBITMQ_EXCHANGE,
-        exchange_type=settings.RABBITMQ_EXCHANGE_TYPE,
-        durable=True,
-    )
-    channel.queue_declare(queue=settings.RABBITMQ_QUEUE, durable=True)
-    channel.queue_bind(
-        queue=settings.RABBITMQ_QUEUE,
-        exchange=settings.RABBITMQ_EXCHANGE,
-        routing_key=settings.RABBITMQ_ROUTING_KEY_SPLIT,
-    )
-    client = Client(
-        host=settings.CLICKHOUSE_HOST,
-        port=settings.CLICKHOUSE_PORT,
-        user=settings.CLICKHOUSE_USER,
-        password=settings.CLICKHOUSE_PASSWORD,
-        database=settings.CLICKHOUSE_DB,
-    )
-    log.info("Ожидание сообщений с разбиениями для запуска ML pipeline...")
+    PATH_TO_GAMES_RAW = settings["PATH_TO_GAMES_RAW_DIR"]
+    TEST_SIZE = settings["TEST_SIZE"]
+    PATH_TO_ML_RESULTS_DIR = settings["PATH_TO_ML_RESULTS_DIR"]
 
-    def callback(ch, method, properties, body):
-        handle_message(body, ch, method, settings, client)
+    # ----------------------- Load data -----------------------
+    game_ids = get_game_ids(PATH_TO_GAMES_RAW)
+    game_ids_train, game_ids_test = game_ids[:-TEST_SIZE], game_ids[-TEST_SIZE:]
 
-    channel.basic_consume(queue=settings.RABBITMQ_QUEUE, on_message_callback=callback)
-    channel.start_consuming()
+    X_train, y_train = get_X_y(PATH_TO_GAMES_RAW, game_ids_train)
+    X_test, y_test = get_X_y(PATH_TO_GAMES_RAW, game_ids_test)
 
+    # ----------------------- Pipeline -----------------------
+    team_cols = [0, 1]
+    player_cols = list(range(2, X_train.shape[1]))
+
+    pipeline = Pipeline([
+        ("features", FeatureUnion([
+            ("team_bag", Pipeline([
+                ("select_teams", ColumnSelector(team_cols)),
+                ("team_encoder", TeamBagEncoder())
+            ])),
+            ("player_bag", Pipeline([
+                ("select_players", ColumnSelector(player_cols)),
+                ("player_encoder", PlayerBagEncoder())
+            ]))
+        ])),
+        ("feature_selector", RecursiveTimeSeriesPermutationSelector(
+            estimator=LogisticRegression(solver="liblinear", max_iter=1000),
+            n_splits=10,
+            n_repeats=1,
+            random_state=42
+        )),
+        ("logit", LogisticRegression(
+            solver="liblinear",
+            max_iter=1000,
+            random_state=42
+        ))
+    ])
+
+    # ----------------------- Fit pipeline -----------------------
+    pipeline.fit(X_train, y_train)
+
+    # ----------------------- Predict & metrics -----------------------
+    y_test_pred = pipeline.predict(X_test)
+    y_test_proba = pipeline.predict_proba(X_test)[:, 1]
+    metrics = get_metrics(y_test, y_test_pred, y_test_proba)
+
+    # ----------------------- Hash & save -----------------------
+    game_ids_bytes = json.dumps(game_ids, sort_keys=True).encode("utf-8")
+    game_ids_hash = hashlib.md5(game_ids_bytes).hexdigest()
+
+    json_path = os.path.join(PATH_TO_ML_RESULTS_DIR, f"{game_ids_hash}.json")
+    pickle_path = os.path.join(PATH_TO_ML_RESULTS_DIR, f"{game_ids_hash}.pickle")
+
+    with open(json_path, "w") as f:
+        json.dump(metrics, f, indent=4)
+
+    with open(pickle_path, "wb") as f:
+        pickle.dump(pipeline, f)
+
+    print(f"Metrics saved to {json_path}")
+    print(f"Pipeline saved to {pickle_path}")
 
 if __name__ == "__main__":
     main()
+
