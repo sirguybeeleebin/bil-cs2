@@ -70,12 +70,11 @@ def get_X_y(path_to_games_raw, game_ids):
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 game = json.load(f)
-            team_players = defaultdict(list)
-            player_kills = {}
+            team_players = defaultdict(list)            
             for p in game["players"]:
-                team_players[p["team"]["id"]].append(p["player"]["id"])
-                player_kills[p["player"]["id"]] = p.get("kills", 0)
+                team_players[p["team"]["id"]].append(p["player"]["id"])                
             t1_id, t2_id = sorted(team_players.keys())
+            p_ids = sorted(team_players[t1_id]) + sorted(team_players[t2_id])
             X.append(
                 [
                     parse(game["begin_at"]),
@@ -84,8 +83,7 @@ def get_X_y(path_to_games_raw, game_ids):
                     t1_id,
                     t2_id,
                 ]
-                + sorted(team_players[t1_id])
-                + sorted(team_players[t2_id])
+                + p_ids                
             )
             team_win_count = {t1_id: 0, t2_id: 0}
             for r in game["rounds"]:

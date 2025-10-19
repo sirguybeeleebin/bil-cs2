@@ -11,7 +11,6 @@ from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
 from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
-from sklearn.feature_selection import RFECV
 import numpy as np
 from dotenv import load_dotenv
 
@@ -19,10 +18,12 @@ from ml.feature_extraction import (
     ColumnSelector,
     PlayerBagEncoder,
     PlayerEloEncoder,
+    PlayerMapEloEncoder,
     TeamBagEncoder,
     TimeFeatureExtractor,
+    PlayerKillsSumFeatureExtractor,
 )
-from ml.feature_selection import RecursiveL1Selector
+from ml.feature_selection import RecursiveL1Selector, RecursiveCVFeatureSelection
 from ml.load_data import get_game_ids, get_X_y
 from ml.metrics import get_metrics
 
@@ -35,6 +36,9 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
+# =============================================
+# Settings
+# =============================================
 def get_settings():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -68,14 +72,15 @@ def run(
     X_train, y_train = get_X_y(path_to_game_raw_dir, game_ids_train)
     X_test, y_test = get_X_y(path_to_game_raw_dir, game_ids_test)
 
-    BEGIN_AT_COL = [0]
+    BEGIN_AT_COL = [0]  
+    MAP_ID_COL = [1]  
     ONE_HOT_COLS = [1, 2]
     TEAM_COLS = [3, 4]
-    PLAYER_COLS = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
-
+    PLAYER_COLS = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]    
+    
     tscv = TimeSeriesSplit(n_splits=n_splits)
 
-    log.info("Построение пайплайна признаков и L1 селектора...")
+    log.info("Построение пайплайна признаков и селекции...")
     feature_pipeline = Pipeline(
         [
             (
@@ -99,6 +104,11 @@ def run(
                             ("elo_encoder", PlayerEloEncoder()),
                             ("scaler", MinMaxScaler())
                         ])),
+                        ("player_map_elo", Pipeline([
+                            ("select_players", ColumnSelector(MAP_ID_COL + PLAYER_COLS)),
+                            ("elo_encoder", PlayerMapEloEncoder()),
+                            ("scaler", MinMaxScaler())
+                        ])),                        
                         ("time_features", Pipeline([
                             ("select_time", ColumnSelector(BEGIN_AT_COL)),
                             ("time_feat", TimeFeatureExtractor()),
@@ -115,75 +125,59 @@ def run(
                                     ("hour", OneHotEncoder(handle_unknown="ignore"), [5]),
                                 ], remainder="drop")),
                             ])),
-                        ])),
+                        ])),                        
                     ]
                 ),
             ),
             ("l1", RecursiveL1Selector(C=l1_c, cv=tscv)),
+            ("recursive_cv", RecursiveCVFeatureSelection(tscv=tscv, verbose=2))
         ]
     )
 
-    log.info("Обучение feature pipeline (кодировщики + L1 селектор)...")
+    log.info("Обучение feature pipeline (кодировщики + L1 + RecursiveCV)...")
     feature_pipeline.fit(X_train, y_train)
-    X_train_sel = feature_pipeline.transform(X_train)
-    X_test_sel = feature_pipeline.transform(X_test)
-    log.info(f"Размер после L1 селекции: {X_train_sel.shape}")
 
-    log.info("Запуск RFECV для отбора признаков...")
-    base_logreg = LogisticRegression(solver="liblinear", random_state=random_state)
-    rfecv = RFECV(
-        estimator=base_logreg,
-        step=1,
-        cv=tscv,
-        scoring="roc_auc",
-        n_jobs=-1,
-        verbose=2,
-    )
-    rfecv.fit(X_train_sel, y_train)
-    X_train_final = rfecv.transform(X_train_sel)
-    X_test_final = rfecv.transform(X_test_sel)
-    log.info(f"Оптимальное количество признаков после RFECV: {rfecv.n_features_}")
+    # Use only the selected features from RFECV
+    X_train_final = feature_pipeline.transform(X_train)
+    X_test_final = feature_pipeline.transform(X_test)
 
-    log.info("Запуск GridSearchCV для подбора C в логистической регрессии...")
-    param_grid = {"C": np.logspace(-2, 2, 100)}
-    final_logreg = GridSearchCV(
+    log.info(f"Размер после рекурсивного отбора признаков: {X_train_final.shape}")
+
+    # ===== Final Logistic Regression with GridSearchCV =====
+    param_grid = {"C": np.logspace(-2, 2, 50)}
+    grid_search_final = GridSearchCV(
         estimator=LogisticRegression(solver="liblinear", random_state=random_state),
         param_grid=param_grid,
         cv=tscv,
         scoring="roc_auc",
         n_jobs=-1,
-        verbose=0,
+        verbose=2
     )
-    final_logreg.fit(X_train_final, y_train)
-    log.info(f"Лучший C: {final_logreg.best_params_['C']} (ROC AUC CV: {final_logreg.best_score_:.4f})")
+    grid_search_final.fit(X_train_final, y_train)
+    final_clf = grid_search_final.best_estimator_
 
-    y_test_proba = final_logreg.predict_proba(X_test_final)[:, 1]  
-    y_test_pred = (y_test_proba >= 0.5).astype(int)                
+    log.info(f"Лучший C для финальной логистической регрессии: {grid_search_final.best_params_['C']}")
+    log.info(f"CV ROC AUC: {grid_search_final.best_score_:.4f}")
 
+    y_test_proba = final_clf.predict_proba(X_test_final)[:, 1]
+    y_test_pred = (y_test_proba >= 0.5).astype(int)
     metrics = get_metrics(y_test, y_test_pred, y_test_proba)
     log.info(f"Метрики на тесте: {metrics}")
 
-    log.info(f"Создание директории для результатов: {path_to_results_dir}")
     os.makedirs(path_to_results_dir, exist_ok=True)
-
-    log.info("Генерация хэша для набора игр...")
     game_ids_bytes = ",".join(map(str, game_ids)).encode()
     hash_id = hashlib.md5(game_ids_bytes).hexdigest()
-    log.info(f"Hash ID: {hash_id}")
 
     metrics_path = os.path.join(path_to_results_dir, f"{hash_id}.json")
-    log.info(f"Сохранение метрик в {metrics_path}...")
     with open(metrics_path, "w") as f:
         json.dump(metrics, f, indent=4)
 
     pipeline_path = os.path.join(path_to_results_dir, f"{hash_id}.pickle")
-    log.info(f"Сохранение пайплайна и финальной модели в {pipeline_path}...")
     with open(pipeline_path, "wb") as f:
         pickle.dump(
             {
                 "feature_pipeline": feature_pipeline,
-                "rfecv": rfecv,
-                "final_clf": final_logreg.best_estimator_,
+                "final_clf": final_clf,
             },
             f,
         )
@@ -201,7 +195,6 @@ def main():
         n_splits=settings["N_SPLITS"],
         random_state=settings["RANDOM_STATE"],
     )
-
     log.info(json.dumps(metrics, indent=4))
 
 
