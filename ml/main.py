@@ -7,9 +7,12 @@ import pickle
 import logging
 
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
 from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.feature_selection import RFECV
+import numpy as np
 from dotenv import load_dotenv
 
 from ml.feature_extraction import (
@@ -17,6 +20,7 @@ from ml.feature_extraction import (
     PlayerBagEncoder,
     PlayerEloEncoder,
     TeamBagEncoder,
+    TimeFeatureExtractor,
 )
 from ml.feature_selection import RecursiveL1Selector
 from ml.load_data import get_game_ids, get_X_y
@@ -54,106 +58,137 @@ def run(
     test_size: int = 100,
     n_splits: int = 10,
     l1_c: float = 1.0,
-    logreg_c: float = 1.0,
     random_state: int = 42,
 ):
-    log.info("Loading game IDs...")
+    log.info("Загрузка ID игр...")
     game_ids = get_game_ids(path_to_game_raw_dir)
     game_ids_train, game_ids_test = game_ids[:-test_size], game_ids[-test_size:]
-    log.info(f"Total games: {len(game_ids)}, train: {len(game_ids_train)}, test: {len(game_ids_test)}")
+    log.info(f"Всего игр: {len(game_ids)}, обучение: {len(game_ids_train)}, тест: {len(game_ids_test)}")
 
     X_train, y_train = get_X_y(path_to_game_raw_dir, game_ids_train)
     X_test, y_test = get_X_y(path_to_game_raw_dir, game_ids_test)
 
-    ONE_HOT_COLS = [0, 1]
-    TEAM_COLS = [2, 3]
-    PLAYER_COLS = list(range(4, X_train.shape[1]))
+    BEGIN_AT_COL = [0]
+    ONE_HOT_COLS = [1, 2]
+    TEAM_COLS = [3, 4]
+    PLAYER_COLS = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+
     tscv = TimeSeriesSplit(n_splits=n_splits)
 
-    log.info("Building pipeline...")
-    pipeline = Pipeline(
+    log.info("Построение пайплайна признаков и L1 селектора...")
+    feature_pipeline = Pipeline(
         [
             (
                 "encoder",
                 FeatureUnion(
                     [
-                        (
-                            "one_hot",
-                            Pipeline(
-                                [
-                                    ("select_cols", ColumnSelector(ONE_HOT_COLS)),
-                                    ("ohe", OneHotEncoder(handle_unknown="ignore")),
-                                ]
-                            ),
-                        ),
-                        (
-                            "team_bag",
-                            Pipeline(
-                                [
-                                    ("select_teams", ColumnSelector(TEAM_COLS)),
-                                    ("team_encoder", TeamBagEncoder()),
-                                ]
-                            ),
-                        ),
-                        (
-                            "player_bag",
-                            Pipeline(
-                                [
-                                    ("select_players", ColumnSelector(PLAYER_COLS)),
-                                    ("player_encoder", PlayerBagEncoder()),
-                                ]
-                            ),
-                        ),
-                        (
-                            "player_elo",
-                            Pipeline(
-                                [
-                                    ("select_players", ColumnSelector(PLAYER_COLS)),
-                                    ("elo_encoder", PlayerEloEncoder()),
-                                    ("scaler", MinMaxScaler()),
-                                ]
-                            ),
-                        ),
+                        ("one_hot", Pipeline([
+                            ("select_cols", ColumnSelector(ONE_HOT_COLS)),
+                            ("ohe", OneHotEncoder(handle_unknown="ignore"))
+                        ])),
+                        ("team_bag", Pipeline([
+                            ("select_teams", ColumnSelector(TEAM_COLS)),
+                            ("team_encoder", TeamBagEncoder())
+                        ])),
+                        ("player_bag", Pipeline([
+                            ("select_players", ColumnSelector(PLAYER_COLS)),
+                            ("player_encoder", PlayerBagEncoder())
+                        ])),
+                        ("player_elo", Pipeline([
+                            ("select_players", ColumnSelector(PLAYER_COLS)),
+                            ("elo_encoder", PlayerEloEncoder()),
+                            ("scaler", MinMaxScaler())
+                        ])),
+                        ("time_features", Pipeline([
+                            ("select_time", ColumnSelector(BEGIN_AT_COL)),
+                            ("time_feat", TimeFeatureExtractor()),
+                            ("time_union", FeatureUnion([
+                                ("timestamp_scaled", Pipeline([
+                                    ("select_ts", ColumnSelector([0])),
+                                    ("scaler", MinMaxScaler())
+                                ])),
+                                ("time_ohe", ColumnTransformer([
+                                    ("year", OneHotEncoder(handle_unknown="ignore"), [1]),
+                                    ("month", OneHotEncoder(handle_unknown="ignore"), [2]),
+                                    ("day", OneHotEncoder(handle_unknown="ignore"), [3]),
+                                    ("weekday", OneHotEncoder(handle_unknown="ignore"), [4]),
+                                    ("hour", OneHotEncoder(handle_unknown="ignore"), [5]),
+                                ], remainder="drop")),
+                            ])),
+                        ])),
                     ]
                 ),
             ),
             ("l1", RecursiveL1Selector(C=l1_c, cv=tscv)),
-            (
-                "clf",
-                LogisticRegression(
-                    solver="liblinear", C=logreg_c, random_state=random_state
-                ),
-            ),
         ]
     )
 
-    log.info("Fitting pipeline...")
-    pipeline.fit(X_train, y_train)
+    log.info("Обучение feature pipeline (кодировщики + L1 селектор)...")
+    feature_pipeline.fit(X_train, y_train)
+    X_train_sel = feature_pipeline.transform(X_train)
+    X_test_sel = feature_pipeline.transform(X_test)
+    log.info(f"Размер после L1 селекции: {X_train_sel.shape}")
 
-    y_test_pred = pipeline.predict(X_test)
-    y_test_proba = pipeline.predict_proba(X_test)[:, 1]
+    log.info("Запуск RFECV для отбора признаков...")
+    base_logreg = LogisticRegression(solver="liblinear", random_state=random_state)
+    rfecv = RFECV(
+        estimator=base_logreg,
+        step=1,
+        cv=tscv,
+        scoring="roc_auc",
+        n_jobs=-1,
+        verbose=2,
+    )
+    rfecv.fit(X_train_sel, y_train)
+    X_train_final = rfecv.transform(X_train_sel)
+    X_test_final = rfecv.transform(X_test_sel)
+    log.info(f"Оптимальное количество признаков после RFECV: {rfecv.n_features_}")
+
+    log.info("Запуск GridSearchCV для подбора C в логистической регрессии...")
+    param_grid = {"C": np.logspace(-2, 2, 100)}
+    final_logreg = GridSearchCV(
+        estimator=LogisticRegression(solver="liblinear", random_state=random_state),
+        param_grid=param_grid,
+        cv=tscv,
+        scoring="roc_auc",
+        n_jobs=-1,
+        verbose=0,
+    )
+    final_logreg.fit(X_train_final, y_train)
+    log.info(f"Лучший C: {final_logreg.best_params_['C']} (ROC AUC CV: {final_logreg.best_score_:.4f})")
+
+    y_test_proba = final_logreg.predict_proba(X_test_final)[:, 1]  
+    y_test_pred = (y_test_proba >= 0.5).astype(int)                
+
     metrics = get_metrics(y_test, y_test_pred, y_test_proba)
+    log.info(f"Метрики на тесте: {metrics}")
 
-    log.info(f"Creating results directory: {path_to_results_dir}")
+    log.info(f"Создание директории для результатов: {path_to_results_dir}")
     os.makedirs(path_to_results_dir, exist_ok=True)
 
-    log.info("Generating hash ID for game_ids...")
+    log.info("Генерация хэша для набора игр...")
     game_ids_bytes = ",".join(map(str, game_ids)).encode()
     hash_id = hashlib.md5(game_ids_bytes).hexdigest()
     log.info(f"Hash ID: {hash_id}")
 
     metrics_path = os.path.join(path_to_results_dir, f"{hash_id}.json")
-    log.info(f"Saving metrics to {metrics_path}...")
+    log.info(f"Сохранение метрик в {metrics_path}...")
     with open(metrics_path, "w") as f:
         json.dump(metrics, f, indent=4)
 
     pipeline_path = os.path.join(path_to_results_dir, f"{hash_id}.pickle")
-    log.info(f"Saving pipeline to {pipeline_path}...")
+    log.info(f"Сохранение пайплайна и финальной модели в {pipeline_path}...")
     with open(pipeline_path, "wb") as f:
-        pickle.dump(pipeline, f)
+        pickle.dump(
+            {
+                "feature_pipeline": feature_pipeline,
+                "rfecv": rfecv,
+                "final_clf": final_logreg.best_estimator_,
+            },
+            f,
+        )
 
-    log.info("Results saved successfully.")
-    
+    log.info("Результаты успешно сохранены.")
     return metrics
 
 

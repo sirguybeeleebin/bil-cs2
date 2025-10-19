@@ -71,11 +71,14 @@ def get_X_y(path_to_games_raw, game_ids):
             with open(file_path, "r", encoding="utf-8") as f:
                 game = json.load(f)
             team_players = defaultdict(list)
+            player_kills = {}
             for p in game["players"]:
                 team_players[p["team"]["id"]].append(p["player"]["id"])
+                player_kills[p["player"]["id"]] = p.get("kills", 0)
             t1_id, t2_id = sorted(team_players.keys())
             X.append(
                 [
+                    parse(game["begin_at"]),
                     game["map"]["id"],
                     int(game["rounds"][0]["ct"] == t1_id),
                     t1_id,

@@ -3,6 +3,7 @@ import warnings
 import numpy as np
 from scipy import sparse
 from sklearn.base import BaseEstimator, TransformerMixin
+import pandas as pd
 
 warnings.filterwarnings("ignore")
 
@@ -124,3 +125,28 @@ class PlayerEloEncoder(BaseEstimator, TransformerMixin):
             )
         X_aug = np.array([self._augment_X(row) for row in X_out], dtype=float)
         return X_aug
+    
+class TimeFeatureExtractor(BaseEstimator, TransformerMixin):
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X = np.asarray(X)
+        if X.ndim > 1:
+            X = X[:, 0]
+        if not np.issubdtype(X.dtype, np.datetime64):
+            X = X.astype('datetime64[ns]')
+        n_samples = len(X)
+        out = np.zeros((n_samples, 6), dtype=float)
+        out[:, 0] = X.astype('int64') / 1e9       
+        years = X.astype('datetime64[Y]').astype(int) + 1970
+        out[:, 1] = years
+        months = (X.astype('datetime64[M]').astype(int) % 12) + 1
+        out[:, 2] = months
+        days = X.astype('datetime64[D]') - X.astype('datetime64[M]')
+        out[:, 3] = days.astype(int) + 1        
+        weekdays = (X.astype('datetime64[D]').view('int64') + 3) % 7
+        out[:, 4] = weekdays
+        hours = X.astype('datetime64[h]').view('int64') % 24
+        out[:, 5] = hours
+        return out
