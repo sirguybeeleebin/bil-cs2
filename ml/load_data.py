@@ -6,7 +6,6 @@ from collections import defaultdict
 import numpy as np
 from dateutil.parser import parse
 
-
 warnings.filterwarnings("ignore")
 
 
@@ -70,19 +69,24 @@ def get_X_y(path_to_games_raw, game_ids):
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 game = json.load(f)
-            team_players = defaultdict(list)            
+            team_players = defaultdict(list)
             for p in game["players"]:
-                team_players[p["team"]["id"]].append(p["player"]["id"])                
-            t1_id, t2_id = sorted(team_players.keys())            
+                team_players[p["team"]["id"]].append(p["player"]["id"])
+            t1_id, t2_id = sorted(team_players.keys())
             X.append(
-                [                    
+                [
+                    parse(game["begin_at"]),
+                    str(game["match"]["league"]["id"]),
+                    str(game["match"]["serie"]["id"]),
+                    str(game["match"]["tournament"]["id"]),
+                    str(game["match"]["serie"]["tier"]),
                     game["map"]["id"],
                     int(game["rounds"][0]["ct"] == t1_id),
                     t1_id,
                     t2_id,
                 ]
-                + sorted(team_players[t1_id])      
-                + sorted(team_players[t2_id])          
+                + sorted(team_players[t1_id])
+                + sorted(team_players[t2_id])
             )
             team_win_count = {t1_id: 0, t2_id: 0}
             for r in game["rounds"]:

@@ -1,9 +1,11 @@
+import json
+import os
 import warnings
 
 import numpy as np
+import pandas as pd
 from scipy import sparse
 from sklearn.base import BaseEstimator, TransformerMixin
-import pandas as pd
 
 warnings.filterwarnings("ignore")
 
@@ -125,10 +127,10 @@ class PlayerEloEncoder(BaseEstimator, TransformerMixin):
             )
         X_aug = np.array([self._augment_X(row) for row in X_out], dtype=float)
         return X_aug
-    
+
 
 class PlayerMapEloEncoder(BaseEstimator, TransformerMixin):
-    def __init__(self, k_factor=32, base_elo=1000):        
+    def __init__(self, k_factor=32, base_elo=1000):
         self.k_factor = k_factor
         self.base_elo = base_elo
         self.elo_dicts_ = {}  # {map_id: {player_id: elo}}
@@ -150,7 +152,7 @@ class PlayerMapEloEncoder(BaseEstimator, TransformerMixin):
                 features.append(x1[i] - x2[j])
         return np.array(features, dtype=float)
 
-    def fit(self, X, y):        
+    def fit(self, X, y):
         X = np.asarray(X)
         y = np.asarray(y)
         X_elo = []
@@ -174,16 +176,20 @@ class PlayerMapEloEncoder(BaseEstimator, TransformerMixin):
 
             # Update team1
             for pid in players[:5]:
-                elo_dict[pid] = elo_dict.get(pid, self.base_elo) + self.k_factor * (score1 - exp1)
+                elo_dict[pid] = elo_dict.get(pid, self.base_elo) + self.k_factor * (
+                    score1 - exp1
+                )
             # Update team2
             for pid in players[5:]:
-                elo_dict[pid] = elo_dict.get(pid, self.base_elo) + self.k_factor * (score2 - (1 - exp1))
+                elo_dict[pid] = elo_dict.get(pid, self.base_elo) + self.k_factor * (
+                    score2 - (1 - exp1)
+                )
 
         self.X_elo_train_ = np.array(X_elo, dtype=float)
         self.X_shape_ = X.shape
         return self
 
-    def transform(self, X):        
+    def transform(self, X):
         X = np.asarray(X)
         X_out = []
 
@@ -202,4 +208,120 @@ class PlayerMapEloEncoder(BaseEstimator, TransformerMixin):
         X_aug = np.array([self._augment_X(row) for row in X_out], dtype=float)
         return X_aug
 
-    
+
+class PlayerKillsSumFeatureExtractor(BaseEstimator, TransformerMixin):
+    def __init__(self, path_to_games_raw_dir: str, game_ids: list[int]):
+        self.path_to_games_raw_dir = path_to_games_raw_dir
+        self.game_ids = game_ids
+        self.player_dict: dict[int, int] = {}
+        self.X_train: np.ndarray = np.zeros((len(self.game_ids), 10))
+
+    def fit(self, X, y=None):
+        for i, game_id in enumerate(self.game_ids):
+            self.X_train[i] = [self.player_dict.get(p_id, 0) for p_id in X[i]]
+            with open(
+                os.path.join(self.path_to_games_raw_dir, f"{game_id}.json"), "r"
+            ) as f:
+                game = json.load(f)
+            player_kills = {p["player"]["id"]: p.get("kills", 0) or 0 for p in game}
+            for p_id in X[i]:
+                self.player_dict[p_id] = self.player_dict.get(
+                    p_id, 0
+                ) + player_kills.get(p_id, 0)
+        return self
+
+    def transform(self, X):
+        if X.shape == self.X_train.shape:
+            return self.X_train
+        for i, row in enumerate(X):
+            X[i] = [self.player_dict.get(p_id, 0) for p_id in row]
+        return X
+
+
+class PlayerStatSumFeatureExtractor(BaseEstimator, TransformerMixin):
+    def __init__(self, stat_name: str, path_to_games_raw_dir: str, game_ids: list[int]):
+        self.stat_name = stat_name
+        self.path_to_games_raw_dir = path_to_games_raw_dir
+        self.game_ids = game_ids
+        self.player_dict: dict[int, int] = {}
+        self.X_train: np.ndarray = None
+
+    def fit(self, X, y=None):
+        X = np.asarray(X, dtype=int)
+        augmented = []
+        for i, game_id in enumerate(self.game_ids):
+            stat_row = [self.player_dict.get(p_id, 0) for p_id in X[i]]
+            with open(
+                os.path.join(self.path_to_games_raw_dir, f"{game_id}.json"), "r"
+            ) as f:
+                game = json.load(f)
+            player_stats = {
+                p["player"]["id"]: p.get(self.stat_name, 0) or 0
+                for p in game["players"]
+            }
+            for p_id in X[i]:
+                self.player_dict[p_id] = self.player_dict.get(
+                    p_id, 0
+                ) + player_stats.get(p_id, 0)
+            augmented_row = self._augment(stat_row)
+            augmented.append(augmented_row)
+        self.X_train = np.array(augmented, dtype=float)
+        return self
+
+    def transform(self, X):
+        X = np.asarray(X, dtype=int)
+        if X.shape[0] == len(self.game_ids):
+            return self.X_train
+        X_out = []
+        for row in X:
+            stat_row = [self.player_dict.get(p_id, 0) for p_id in row]
+            augmented_row = self._augment(stat_row)
+            X_out.append(augmented_row)
+        return np.array(X_out, dtype=float)
+
+    def _augment(self, row):
+        team1 = np.sort(row[:5])
+        team2 = np.sort(row[5:])
+        features = np.zeros(10 + 3 + 25)
+        features[:5] = team1
+        features[5:10] = team2
+        features[10:13] = [
+            np.mean(team1),
+            np.mean(team2),
+            np.mean(team1) - np.mean(team2),
+        ]
+        idx = 13
+        for i in range(5):
+            for j in range(5):
+                features[idx] = team1[i] - team2[j]
+                idx += 1
+        return features
+
+
+class DateFeatureExtractor(BaseEstimator, TransformerMixin):
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        # Convert input to pandas Series of datetime
+        if isinstance(X, pd.DataFrame):
+            dates = pd.to_datetime(X.iloc[:, 0])
+        else:
+            dates = pd.to_datetime(np.ravel(X))
+
+        # Ensure 'dates' is a Series (DatetimeIndex has no .dt)
+        if isinstance(dates, pd.DatetimeIndex):
+            dates = pd.Series(dates)
+
+        # Return timestamp + date components
+        features = np.column_stack(
+            [
+                dates.view("int64") // 10**9,  # UNIX timestamp (seconds)
+                dates.dt.year,
+                dates.dt.month,
+                dates.dt.day,
+                dates.dt.dayofweek,
+                dates.dt.hour,
+            ]
+        )
+        return features
