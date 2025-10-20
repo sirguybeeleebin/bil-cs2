@@ -126,9 +126,6 @@ class PlayerEloEncoder(BaseEstimator, TransformerMixin):
         X_aug = np.array([self._augment_X(row) for row in X_out], dtype=float)
         return X_aug
     
-import numpy as np
-from sklearn.base import BaseEstimator, TransformerMixin
-
 
 class PlayerMapEloEncoder(BaseEstimator, TransformerMixin):
     def __init__(self, k_factor=32, base_elo=1000):        
@@ -206,74 +203,3 @@ class PlayerMapEloEncoder(BaseEstimator, TransformerMixin):
         return X_aug
 
     
-class TimeFeatureExtractor(BaseEstimator, TransformerMixin):
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        X = np.asarray(X)
-        if X.ndim > 1:
-            X = X[:, 0]
-        if not np.issubdtype(X.dtype, np.datetime64):
-            X = X.astype('datetime64[ns]')
-        n_samples = len(X)
-        out = np.zeros((n_samples, 6), dtype=float)
-        out[:, 0] = X.astype('int64') / 1e9       
-        years = X.astype('datetime64[Y]').astype(int) + 1970
-        out[:, 1] = years
-        months = (X.astype('datetime64[M]').astype(int) % 12) + 1
-        out[:, 2] = months
-        days = X.astype('datetime64[D]') - X.astype('datetime64[M]')
-        out[:, 3] = days.astype(int) + 1        
-        weekdays = (X.astype('datetime64[D]').view('int64') + 3) % 7
-        out[:, 4] = weekdays
-        hours = X.astype('datetime64[h]').view('int64') % 24
-        out[:, 5] = hours
-        return out
-    
-from sklearn.base import BaseEstimator, TransformerMixin
-from collections import defaultdict
-import numpy as np
-
-class PlayerKillsSumFeatureExtractor(BaseEstimator, TransformerMixin):    
-    def __init__(self):
-        self.player_kills_dict = {}
-        self.X_train_kills_ = None
-
-    def fit(self, X, y=None):        
-        self.X_train_kills_ = []
-        for row in X:
-            player_ids = row[:10]
-            player_kills = row[10:20]
-            row_cum_kills = [self.player_kills_dict.get(pid, 0) for pid in player_ids]
-            self.X_train_kills_.append(row_cum_kills)
-            for pid, kills in zip(player_ids, player_kills):
-                self.player_kills_dict[pid] = self.player_kills_dict.get(pid, 0) + kills        
-        self.X_train_kills_ = np.array(self.X_train_kills_)
-        return self
-
-    def transform(self, X):        
-        if self.X_train_kills_ is not None and X.shape == self.X_train_kills_.shape:
-            X_out = self.X_train_kills_
-        else:
-            X_out = []
-            for row in X:
-                player_ids = row[:10]
-                row_kills = [self.player_kills_dict.get(pid, 0) for pid in player_ids]
-                X_out.append(row_kills)
-            X_out = np.array(X_out)
-        # augment features
-        X_aug = np.array([self._augment(row) for row in X_out], dtype=float)
-        return X_aug
-
-    def _augment(self, row):        
-        left = np.sort(row[:5])
-        right = np.sort(row[5:])
-        features = np.concatenate([
-            left, 
-            right, 
-            [np.mean(left), np.mean(right), np.mean(left) - np.mean(right)]
-        ])
-        pairwise_diffs = [left[i] - right[j] for i in range(5) for j in range(5)]
-        features = np.concatenate([features, pairwise_diffs])
-        return features
