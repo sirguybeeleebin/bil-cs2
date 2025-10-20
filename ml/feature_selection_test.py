@@ -1,76 +1,64 @@
 import numpy as np
 import pytest
-from scipy import sparse
-from sklearn.model_selection import KFold
+from sklearn.datasets import make_classification
+from sklearn.model_selection import TimeSeriesSplit
 
-from ml.feature_selection import RecursiveL1Selector
-
-def test_recursive_l1_selector_dense():
-    X = np.array([
-        [1, 0, 0, 1],
-        [0, 1, 0, 1],
-        [1, 1, 0, 1],
-        [0, 0, 1, 1],
-    ])
-    y = np.array([1, 1, 0, 0])
-
-    cv = KFold(n_splits=2, shuffle=True, random_state=42)
-    selector = RecursiveL1Selector(C=1, cv=cv)
-    selector.fit(X, y)
-    X_trans = selector.transform(X)
-
-    assert selector.features_mask_.dtype == bool
-    assert selector.features_mask_.shape[0] == X.shape[1]
-    assert X_trans.shape[1] == selector.features_mask_.sum()
-    assert X_trans.shape[1] <= X.shape[1]
-
-def test_recursive_l1_selector_sparse():
-    X = sparse.csr_matrix([
-        [1, 0, 0, 1],
-        [0, 1, 0, 1],
-        [1, 1, 0, 1],
-        [0, 0, 1, 1],
-    ])
-    y = np.array([1, 1, 0, 0])
-
-    cv = KFold(n_splits=2, shuffle=True, random_state=42)
-    selector = RecursiveL1Selector(C=1, cv=cv)
-    selector.fit(X, y)
-    X_trans = selector.transform(X)
-
-    assert selector.features_mask_.dtype == bool
-    assert selector.features_mask_.shape[0] == X.shape[1]
-    assert X_trans.shape[1] == selector.features_mask_.sum()
-    assert X_trans.shape[1] <= X.shape[1]
-
-def test_recursive_l1_selector_removes_zero_features():
-    X = np.array([
-        [1, 0, 0],
-        [0, 1, 0],
-        [1, 1, 0],
-        [0, 0, 0],
-    ])
-    y = np.array([1, 1, 0, 0])
-    cv = KFold(n_splits=2, shuffle=True, random_state=42)
-
-    selector = RecursiveL1Selector(C=1, cv=cv)
-    selector.fit(X, y)
-
-    # Feature 2 should be removed
-    assert selector.features_mask_[2] == False  # Use == instead of `is`
-
-    # At least one of feature 0 or 1 should be kept
-    assert selector.features_mask_[:2].any()
+from ml.feature_selection import select_features_with_logit_and_cv  # replace with actual import
 
 
-def test_transform_returns_correct_shape():
-    X = np.random.rand(5, 6)
-    y = np.array([0, 1, 0, 1, 0])
-    cv = KFold(n_splits=2, shuffle=True, random_state=42)
-    selector = RecursiveL1Selector(C=1, cv=cv)
-    selector.fit(X, y)
-    X_trans = selector.transform(X)
+def test_select_features_with_logit_and_cv_basic():
+    # Generate a small synthetic dataset
+    X, y = make_classification(
+        n_samples=100,
+        n_features=20,
+        n_informative=5,
+        n_redundant=2,
+        random_state=42,
+    )
 
-    assert X_trans.shape[0] == X.shape[0]
-    # Should match number of selected features
-    assert X_trans.shape[1] == selector.features_mask_.sum()
+    cv = TimeSeriesSplit(n_splits=5)
+
+    mask = select_features_with_logit_and_cv(
+        X_train=X,
+        y_train=y,
+        Cs=np.array([0.1, 0.5]),
+        scoring="roc_auc",
+        random_state=42,
+        cv=cv,
+        verbose=0,
+        n_jobs=1,
+    )
+
+    # Check type
+    assert isinstance(mask, np.ndarray)
+    assert mask.dtype == bool
+
+    # Mask length equals number of features
+    assert mask.shape[0] == X.shape[1]
+
+    # At least one feature selected
+    assert mask.sum() > 0
+
+
+def test_select_features_with_logit_and_cv_all_zero_features():
+    X = np.zeros((50, 10))
+    y = np.random.randint(0, 2, size=50)
+    cv = TimeSeriesSplit(n_splits=3)
+
+    try:
+        mask = select_features_with_logit_and_cv(
+            X_train=X,
+            y_train=y,
+            Cs=np.array([0.1]),
+            scoring="roc_auc",
+            random_state=42,
+            cv=cv,
+            verbose=0,
+            n_jobs=1,
+        )
+        # If it returns, all features are False
+        assert np.all(mask == False)
+    except ValueError as e:
+        # Accept the scikit-learn error as expected
+        assert "Found array with 0 feature(s)" in str(e)
+

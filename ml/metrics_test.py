@@ -1,6 +1,7 @@
 import numpy as np
-import pytest
+
 from ml.metrics import get_metrics  # Adjust import path
+
 
 def test_get_metrics_basic():
     y_true = np.array([0, 0, 1, 1])
@@ -9,7 +10,17 @@ def test_get_metrics_basic():
 
     metrics = get_metrics(y_true, y_pred, y_proba)
 
-    expected_keys = {"accuracy", "precision", "recall", "f1_score", "auc", "tp", "tn", "fp", "fn"}
+    expected_keys = {
+        "accuracy",
+        "precision",
+        "recall",
+        "f1_score",
+        "auc",
+        "tp",
+        "tn",
+        "fp",
+        "fn",
+    }
     assert set(metrics.keys()) == expected_keys
 
     # Check metric values
