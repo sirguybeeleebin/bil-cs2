@@ -44,7 +44,9 @@ class MLMetrics(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"Metrics {self.ml_metrics_id} for pipeline {self.pipeline.ml_pipeline_id}"
+        return (
+            f"Metrics {self.ml_metrics_id} for pipeline {self.pipeline.ml_pipeline_id}"
+        )
 
     class Meta:
         verbose_name = "ML Metric"

@@ -1,4 +1,5 @@
 from pathlib import Path
+
 from celery.schedules import crontab
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -15,7 +16,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "django_celery_beat",
-    "app.apps.AppConfig",
+    "internal.app.app.AppConfig",
 ]
 
 MIDDLEWARE = [
@@ -59,7 +60,9 @@ DATABASES = {
 }
 
 AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
+    },
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
@@ -86,11 +89,11 @@ CELERY_RESULT_EXPIRES = None
 
 CELERY_BEAT_SCHEDULE = {
     "run_etl_every_hour": {
-        "task": "app.tasks.run_etl_task",
+        "task": "internal.tasks.run_etl_task",
         "schedule": crontab(minute=0, hour="*"),
     },
     "run_ml_daily_midnight": {
-        "task": "app.tasks.run_ml_task",
+        "task": "internal.tasks.run_ml_task",
         "schedule": crontab(minute=0, hour=0),
     },
 }
