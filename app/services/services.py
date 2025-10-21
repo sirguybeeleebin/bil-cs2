@@ -48,27 +48,21 @@ class ETLService:
             return
 
         for fnm in os.listdir(path_to_games_raw_dir):
-            pth = os.path.join(path_to_games_raw_dir, fnm)
-            if not os.path.isfile(pth):
-                continue
-
+            pth = os.path.join(path_to_games_raw_dir, fnm)            
             try:
                 with open(pth, "r", encoding="utf-8") as f:
                     game = json.load(f)
             except Exception as e:
                 log.error(f"Ошибка при загрузке файла {pth}: {e}")
                 continue
-
             map_data = self._extract_map(game)
             if map_data:
                 self.map_repo.upsert(map_data)
                 log.info(f"Обновлена информация о карте: {map_data}")
-
             teams_data = self._extract_teams(game)
             for team in teams_data:
                 self.team_repo.upsert(team)
                 log.info(f"Обновлена информация о команде: {team}")
-
             players_data = self._extract_players(game)
             for player in players_data:
                 self.player_repo.upsert(player)
@@ -106,6 +100,69 @@ class ETLService:
         except Exception as e:
             log.error(f"Ошибка при извлечении игроков: {e}")
         return players
+    
+
+import logging
+from typing import Optional
+
+from internal.repositories import MapRepository, TeamRepository, PlayerRepository
+
+log = logging.getLogger(__name__)
+
+
+class CS2Service:
+    """Сервис для работы с картами, командами и игроками."""
+
+    def __init__(
+        self,
+        map_repo: MapRepository,
+        team_repo: TeamRepository,
+        player_repo: PlayerRepository,
+    ):
+        self.map_repo = map_repo
+        self.team_repo = team_repo
+        self.player_repo = player_repo
+        log.info("CS2Service инициализирован")
+
+    def get_map_by_name(self, name: str) -> Optional[dict]:
+        """Получить карту по имени."""
+        if not name:
+            log.warning("Имя карты не указано")
+            return None
+
+        result = self.map_repo.get_by_name(name)
+        if result:
+            log.info(f"Карта найдена: {result}")
+        else:
+            log.info(f"Карта '{name}' не найдена")
+        return result
+
+    def get_team_by_name(self, name: str) -> Optional[dict]:
+        """Получить команду по имени."""
+        if not name:
+            log.warning("Имя команды не указано")
+            return None
+
+        result = self.team_repo.get_by_name(name)
+        if result:
+            log.info(f"Команда найдена: {result}")
+        else:
+            log.info(f"Команда '{name}' не найдена")
+        return result
+
+    def get_player_by_name(self, name: str) -> Optional[dict]:
+        """Получить игрока по имени."""
+        if not name:
+            log.warning("Имя игрока не указано")
+            return None
+
+        result = self.player_repo.get_by_name(name)
+        if result:
+            log.info(f"Игрок найден: {result}")
+        else:
+            log.info(f"Игрок '{name}' не найден")
+        return result
+
 
 
 class MLService:
@@ -529,3 +586,22 @@ class MLService:
                     dtype=float,
                 )
             return np.array([self._augment_X(row) for row in X_out], dtype=float)
+
+def make_etl_service(
+    map_repo: MapRepository,
+    team_repo: TeamRepository,
+    player_repo: PlayerRepository,
+) -> ETLService:
+    return ETLService(map_repo=map_repo, team_repo=team_repo, player_repo=player_repo)
+
+
+def make_cs2_service(
+    map_repo: MapRepository,
+    team_repo: TeamRepository,
+    player_repo: PlayerRepository,
+) -> CS2Service:
+    return CS2Service(map_repo=map_repo, team_repo=team_repo, player_repo=player_repo)
+
+
+def make_ml_service() -> MLService:
+    return MLService()

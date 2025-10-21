@@ -16,7 +16,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "django_celery_beat",
-    "internal.app.app.AppConfig",
+    "app.app.AppConfig",
 ]
 
 MIDDLEWARE = [
