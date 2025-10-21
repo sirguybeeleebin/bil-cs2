@@ -1,5 +1,5 @@
 import logging
-from internal.models import Team
+from app.models import Team
 
 log = logging.getLogger(__name__)
 

@@ -1,5 +1,4 @@
 from pathlib import Path
-
 from celery.schedules import crontab
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -16,7 +15,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "django_celery_beat",
-    "app.app.AppConfig",
+    "app.app.AppConfig",  # your main app
 ]
 
 MIDDLEWARE = [
@@ -89,11 +88,11 @@ CELERY_RESULT_EXPIRES = None
 
 CELERY_BEAT_SCHEDULE = {
     "run_etl_every_hour": {
-        "task": "internal.tasks.run_etl_task",
+        "task": "app.tasks.etl.run_etl_task",  # updated path
         "schedule": crontab(minute=0, hour="*"),
     },
     "run_ml_daily_midnight": {
-        "task": "internal.tasks.run_ml_task",
+        "task": "app.tasks.ml.run_ml_task",  # updated path
         "schedule": crontab(minute=0, hour=0),
     },
 }

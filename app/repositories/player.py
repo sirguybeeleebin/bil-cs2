@@ -1,5 +1,5 @@
 import logging
-from internal.models import Player
+from app.models import Player
 
 log = logging.getLogger(__name__)
 

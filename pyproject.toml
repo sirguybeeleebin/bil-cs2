@@ -25,6 +25,7 @@ django-celery-beat = "^2.8.1"
 celery = "^5.5.3"
 redis = "^6.4.0"
 optuna = "^4.5.0"
+pytest-django = "^4.11.1"
 
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.14.0"
@@ -63,8 +64,14 @@ exclude = '''
 /(\.venv|venv|__pycache__|data)/
 '''
 
-# --- Pytest configuration ---
+
+
 [tool.pytest.ini_options]
-addopts = "-v --disable-warnings"
-testpaths = ["tests"]
+addopts = "-v --disable-warnings --tb=short --reuse-db"
+python_files = "test_*.py *_test.py"
+DJANGO_SETTINGS_MODULE = "config.settings"
 pythonpath = "."
+testpaths = [
+    "app/repositories",
+    "tests"
+]

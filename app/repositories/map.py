@@ -1,5 +1,5 @@
 import logging
-from internal.models import Map
+from app.models import Map
 
 log = logging.getLogger(__name__)
 
