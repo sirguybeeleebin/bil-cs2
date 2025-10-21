@@ -48,9 +48,8 @@ redis-up:
 
 prune:	
 	docker container prune -f
-	docker volume prune -f
-	docker volume rm clickhouse_data -f
-	docker volume rm postgres_data -f
+	docker volume prune -f	
+	docker volume rm bil-cs2_postgres_data -f
 
 start-app: migrate
 	@echo "🛠 Running migrations..."
