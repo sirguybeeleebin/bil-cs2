@@ -1,13 +1,12 @@
+import argparse
+import asyncio
 import json
 import logging
 import os
-
+import uuid
 import joblib
-from celery import Celery
-from celery.schedules import crontab
-from celery.signals import worker_ready
 from dotenv import load_dotenv
-
+import redis.asyncio as redis
 from ml.train_model import train_model
 
 logging.basicConfig(
@@ -15,60 +14,79 @@ logging.basicConfig(
 )
 log = logging.getLogger("cs2_ml_worker")
 
-load_dotenv()
-log.info("✅ Загружен .env файл")
 
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-REDIS_DB = int(os.getenv("REDIS_DB", 0))
-GAMES_RAW_DIR = os.getenv("PATH_TO_GAMES_RAW_DIR", "data/games_raw")
-ML_RESULTS_DIR = os.getenv("PATH_TO_ML_RESULTS_DIR", "data/ml_results")
+def parse_config() -> dict:
+    parser = argparse.ArgumentParser(description="ML model periodic worker")
+    parser.add_argument(
+        "--env_file",
+        type=str,
+        default=".env",
+        help="Path to .env file (default: .env)",
+    )
+    args = parser.parse_args()
+    load_dotenv(args.env_file)
 
-os.makedirs(ML_RESULTS_DIR, exist_ok=True)
+    config = {
+        "games_dir": os.getenv("PATH_TO_GAMES_RAW_DIR", "data/games_raw"),
+        "results_dir": os.getenv("PATH_TO_ML_RESULTS_DIR", "data/ml_results"),
+        "train_interval": int(os.getenv("TRAIN_INTERVAL_SECONDS", 24 * 60 * 60)),
+        "redis_host": os.getenv("REDIS_HOST", "localhost"),
+        "redis_port": int(os.getenv("REDIS_PORT", 6379)),
+        "redis_db": int(os.getenv("REDIS_DB", 0)),
+        "redis_queue": os.getenv("REDIS_QUEUE", "ml_models"),
+        "env_file": args.env_file,
+    }
+    os.makedirs(config["results_dir"], exist_ok=True)
+    return config
 
-redis_uri = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
-celery_app = Celery("cs2_ml_worker", broker=redis_uri, backend=redis_uri)
+
+async def train_model_periodically(config: dict, redis_conn: redis.Redis):    
+    while True:
+        task_id = str(uuid.uuid4())
+        log.info("⚙️ Запуск задачи обучения модели CS2...")
+        try:
+            predictor, metrics = train_model(config["games_dir"])
+
+            predictor_path = os.path.join(config["results_dir"], f"{task_id}.joblib")
+            metrics_path = os.path.join(config["results_dir"], f"{task_id}.json")
+
+            joblib.dump(predictor, predictor_path)
+            log.info(f"✅ Predictor сохранен: {predictor_path}")
+
+            with open(metrics_path, "w", encoding="utf-8") as f:
+                json.dump(metrics, f, ensure_ascii=False, indent=4)
+            log.info(f"✅ Метрики сохранены: {metrics_path}")
+
+            message = json.dumps({
+                "predictor_path": predictor_path,
+                "metrics_path": metrics_path,
+                "task_id": task_id,
+            })
+            await redis_conn.lpush(config["redis_queue"], message)
+            log.info(f"📤 Сообщение опубликовано в Redis queue '{config['redis_queue']}': {message}")
+
+        except Exception as e:
+            log.error(f"❌ Ошибка при обучении модели: {e}", exc_info=True)
+
+        log.info(f"⏱ Ждем {config['train_interval']} секунд до следующей тренировки...")
+        await asyncio.sleep(config["train_interval"])
 
 
-@celery_app.task(name="cs2_ml_worker.train_model_task", bind=True)
-def train_model_task(self):
-    log.info("⚙️ Запуск задачи обучения модели CS2...")
-    task_id = self.request.id
+async def main():
+    config = parse_config()
+    log.info(f"✅ Загружен .env файл: {config['env_file']}")
+    log.info(f"⏱ Интервал тренировки: {config['train_interval']} секунд")
+
+    redis_uri = f"redis://{config['redis_host']}:{config['redis_port']}/{config['redis_db']}"
+    redis_conn = redis.from_url(redis_uri)
+
     try:
-        predictor, metrics = train_model(GAMES_RAW_DIR)
-
-        predictor_path = os.path.join(ML_RESULTS_DIR, f"predictor_{task_id}.joblib")
-        metrics_path = os.path.join(ML_RESULTS_DIR, f"metrics_{task_id}.json")
-
-        joblib.dump(predictor, predictor_path)
-        log.info(f"✅ Predictor сохранен: {predictor_path}")
-
-        with open(metrics_path, "w", encoding="utf-8") as f:
-            json.dump(metrics, f, ensure_ascii=False, indent=4)
-        log.info(f"✅ Метрики сохранены: {metrics_path}")
-
-        return {"predictor_path": predictor_path, "metrics_path": metrics_path}
-
-    except Exception as e:
-        log.error(f"❌ Ошибка при обучении модели: {e}", exc_info=True)
-        raise e
+        log.info("🚀 ML Worker стартует...")
+        await train_model_periodically(config, redis_conn)
+    finally:
+        await redis_conn.close()
+        log.info("🔌 Redis connection closed.")
 
 
-@worker_ready.connect
-def at_start(**kwargs):
-    log.info("🚀 Воркер CS2 ML готов — триггерим задачу обучения модели...")
-    train_model_task.delay()
-
-
-# Optional: schedule periodic model training (daily at midnight)
-celery_app.conf.beat_schedule = {
-    "daily-train-model": {
-        "task": "cs2_ml_worker.train_model_task",
-        "schedule": crontab(hour=0, minute=0),
-        "args": (),
-    },
-}
-
-celery_app.conf.task_routes = {"cs2_ml_worker.*": {"queue": "cs2_ml"}}
-
-log.info("✅ ML Worker и Beat настроены и готовы к работе.")
+if __name__ == "__main__":
+    asyncio.run(main())
