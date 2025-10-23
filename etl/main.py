@@ -2,8 +2,10 @@ import argparse
 import asyncio
 import logging
 import os
-from etl.etl import load_cs2_data
+
 from dotenv import load_dotenv
+
+from etl.etl import load_cs2_data
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
@@ -11,7 +13,7 @@ logging.basicConfig(
 log = logging.getLogger("cs2_main")
 
 
-def parse_config() -> dict:   
+def parse_config() -> dict:
     parser = argparse.ArgumentParser(description="CS2 periodic data loader")
     parser.add_argument(
         "--env_file",
@@ -20,13 +22,13 @@ def parse_config() -> dict:
         help="Path to .env file (default: .env)",
     )
     args = parser.parse_args()
-   
+
     load_dotenv(args.env_file)
 
     config = {
         "games_dir": os.getenv("PATH_TO_GAMES_RAW_DIR", "data/games_raw"),
         "base_url": os.getenv("CS2_API_BASE_URL", "http://localhost:8000"),
-        "load_interval": int(os.getenv("LOAD_INTERVAL_SECONDS", 60 * 60)),        
+        "load_interval": int(os.getenv("LOAD_INTERVAL_SECONDS", 60 * 60)),
     }
     return config
 

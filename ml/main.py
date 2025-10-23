@@ -4,9 +4,11 @@ import json
 import logging
 import os
 import uuid
+
 import joblib
-from dotenv import load_dotenv
 import redis.asyncio as redis
+from dotenv import load_dotenv
+
 from ml.train_model import train_model
 
 logging.basicConfig(
@@ -40,7 +42,7 @@ def parse_config() -> dict:
     return config
 
 
-async def train_model_periodically(config: dict, redis_conn: redis.Redis):    
+async def train_model_periodically(config: dict, redis_conn: redis.Redis):
     while True:
         task_id = str(uuid.uuid4())
         log.info("⚙️ Запуск задачи обучения модели CS2...")
@@ -57,13 +59,17 @@ async def train_model_periodically(config: dict, redis_conn: redis.Redis):
                 json.dump(metrics, f, ensure_ascii=False, indent=4)
             log.info(f"✅ Метрики сохранены: {metrics_path}")
 
-            message = json.dumps({
-                "predictor_path": predictor_path,
-                "metrics_path": metrics_path,
-                "task_id": task_id,
-            })
+            message = json.dumps(
+                {
+                    "predictor_path": predictor_path,
+                    "metrics_path": metrics_path,
+                    "task_id": task_id,
+                }
+            )
             await redis_conn.lpush(config["redis_queue"], message)
-            log.info(f"📤 Сообщение опубликовано в Redis queue '{config['redis_queue']}': {message}")
+            log.info(
+                f"📤 Сообщение опубликовано в Redis queue '{config['redis_queue']}': {message}"
+            )
 
         except Exception as e:
             log.error(f"❌ Ошибка при обучении модели: {e}", exc_info=True)
@@ -77,7 +83,9 @@ async def main():
     log.info(f"✅ Загружен .env файл: {config['env_file']}")
     log.info(f"⏱ Интервал тренировки: {config['train_interval']} секунд")
 
-    redis_uri = f"redis://{config['redis_host']}:{config['redis_port']}/{config['redis_db']}"
+    redis_uri = (
+        f"redis://{config['redis_host']}:{config['redis_port']}/{config['redis_db']}"
+    )
     redis_conn = redis.from_url(redis_uri)
 
     try:

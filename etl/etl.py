@@ -1,67 +1,116 @@
-import argparse
-import asyncio
+import json
 import logging
 import os
-from etl.etl import load_cs2_data
-from dotenv import load_dotenv
+from collections.abc import Generator
+from typing import List, Optional, Tuple
+
 import httpx
 
+log = logging.getLogger("cs2_etl")
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
-log = logging.getLogger("cs2_main")
 
 
-def parse_config() -> dict:
-    """
-    Парсит CLI аргументы и загружает .env.
-    Возвращает конфигурацию.
-    """
-    parser = argparse.ArgumentParser(description="CS2 periodic data loader")
-    parser.add_argument(
-        "--env_file",
-        type=str,
-        default=".env",
-        help="Path to .env file (default: .env)",
-    )
-    args = parser.parse_args()
-    load_dotenv(args.env_file)
-
-    config = {
-        "games_dir": os.getenv("PATH_TO_GAMES_RAW_DIR", "data/games_raw"),
-        "base_url": os.getenv("CS2_API_BASE_URL", "http://localhost:8000"),
-        "load_interval": int(os.getenv("LOAD_INTERVAL_SECONDS", 60 * 60)),
-        "env_file": args.env_file,
-    }
-    return config
+def _generate_game_raw(
+    path_to_games_raw_dir: str,
+) -> Generator[Tuple[str, dict], None, None]:
+    log.info(f"🔍 Сканирование директории с играми: {path_to_games_raw_dir}")
+    for root, _, files in os.walk(path_to_games_raw_dir):
+        for file in files:
+            file_path = os.path.join(root, file)
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                log.info(f"📂 Успешно загружен файл игры: {file_path}")
+                yield file_path, data
+            except Exception as e:
+                log.warning(f"⚠️ Не удалось загрузить файл {file_path}: {e}")
 
 
-async def load_cs2_games_periodically(config: dict, client: httpx.Client):
-    """
-    config: словарь с настройками
-    client: httpx.Client (можно повторно использовать)
-    """
-    while True:
-        try:
-            log.info("⚙️ Запуск загрузки CS2 данных...")
-            result = load_cs2_data(config["games_dir"], config["base_url"], client)
-            log.info(f"✅ Задача завершена: {result}")
-        except Exception as e:
-            log.error(f"❌ Ошибка при загрузке CS2 данных: {e}", exc_info=True)
-
-        log.info(f"⏱ Ждем {config['load_interval']} секунд до следующей загрузки...")
-        await asyncio.sleep(config["load_interval"])
+# ----------------------------
+# Entity Extractors
+# ----------------------------
 
 
-async def main():
-    config = parse_config()
-    log.info(f"✅ Загружен .env файл: {config['env_file']}")
-    log.info(f"⏱ Интервал загрузки: {config['load_interval']} секунд")
-    
-    async with httpx.AsyncClient() as client:
-        log.info("🚀 CS2 Loader стартует...")
-        await load_cs2_games_periodically(config, client)
+def _extract_map(game: dict) -> Optional[dict]:
+    try:
+        return {"map_id": game["map"]["id"], "name": game["map"]["name"]}
+    except Exception as e:
+        log.warning(f"⚠️ Не удалось получить данные карты: {e}")
+        return None
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+def _extract_teams(game: dict) -> List[dict]:
+    teams_dict = {}
+    for p in game.get("players", []):
+        team = p.get("team")
+        if team and team.get("id") and team.get("name"):
+            teams_dict[team["id"]] = {"team_id": team["id"], "name": team["name"]}
+    return list(teams_dict.values())
+
+
+def _extract_players(game: dict) -> List[dict]:
+    players_dict = {}
+    for p in game.get("players", []):
+        player = p.get("player")
+        if player and player.get("id") and player.get("name"):
+            players_dict[player["id"]] = {
+                "player_id": player["id"],
+                "name": player["name"],
+            }
+    return list(players_dict.values())
+
+
+# ----------------------------
+# HTTP Sender
+# ----------------------------
+
+
+def _send_data(client: httpx.Client, endpoint: str, data: List[dict], base_url: str):
+    if not data:
+        return
+    response = client.post(f"{base_url}/{endpoint}/save", json=data)
+    response.raise_for_status()
+    log.info(f"✅ Успешно отправлено на {endpoint}: {len(data)} записей")
+
+
+def load_cs2_data(
+    path_to_games_raw_dir: str,
+    base_url: str,
+    client: httpx.Client,
+) -> dict[str, int]:
+    log.info("🚀 Запуск процесса загрузки данных CS2 через HTTP API (sync)")
+
+    total, success, error = 0, 0, 0
+    client_provided = client is not None
+    client = client or httpx.Client()
+
+    try:
+        for file_path, game in _generate_game_raw(path_to_games_raw_dir):
+            total += 1
+            log.info(f"⚙️ Обработка файла игры #{total}: {file_path}")
+            try:
+                map_data = _extract_map(game)
+                teams = _extract_teams(game)
+                players = _extract_players(game)
+
+                _send_data(client, "maps", [map_data] if map_data else [], base_url)
+                _send_data(client, "teams", teams, base_url)
+                _send_data(client, "players", players, base_url)
+
+                success += 1
+                log.info(f"✅ Игра #{total} успешно загружена через API")
+            except Exception as e:
+                error += 1
+                log.error(
+                    f"❌ Ошибка при обработке файла {file_path}: {e}", exc_info=True
+                )
+    finally:
+        if not client_provided:
+            client.close()
+
+    log.info("📊 Загрузка завершена")
+    log.info(f"Всего файлов: {total}, Успешно: {success}, Ошибки: {error}")
+
+    return {"total": total, "success": success, "error": error}

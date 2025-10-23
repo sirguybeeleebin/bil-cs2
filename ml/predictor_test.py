@@ -11,45 +11,55 @@ from ml.feature_extractors import (
 )
 from ml.predictor import Team1WinProbabilityPredictor
 
-
+# -----------------------------
+# Mock fixtures
+# -----------------------------
 @pytest.fixture
 def mock_column_selector():
     selector = MagicMock(spec=ColumnSelector)
-    selector.return_value.fit_transform = lambda X, y=None: np.array(X)[:, :1]
-    selector.return_value.transform = lambda X: np.array(X)[:, :1]
+    # Ensure at least 2 features output
+    selector.return_value.fit_transform = lambda X, y=None: np.hstack([np.array(X), np.ones((len(X), 1))])
+    selector.return_value.transform = lambda X: np.hstack([np.array(X), np.ones((len(X), 1))])
     return selector
-
 
 @pytest.fixture
 def mock_player_elo_encoder():
     encoder = MagicMock(spec=PlayerEloEncoder)
-    encoder.fit_transform = lambda X, y=None: np.ones((len(X), 1))
-    encoder.transform = lambda X: np.ones((len(X), 1))
+    encoder.fit_transform = lambda X, y=None: np.ones((len(X), 2))  # at least 2 features
+    encoder.transform = lambda X: np.ones((len(X), 2))
     return encoder
-
 
 @pytest.fixture
 def mock_player_bag_encoder():
     encoder = MagicMock(spec=PlayerBagEncoder)
-    encoder.fit_transform = lambda X, y=None: np.ones((len(X), 1))
-    encoder.transform = lambda X: np.ones((len(X), 1))
+    encoder.fit_transform = lambda X, y=None: np.ones((len(X), 2))
+    encoder.transform = lambda X: np.ones((len(X), 2))
     return encoder
-
 
 @pytest.fixture
 def mock_team_bag_encoder():
     encoder = MagicMock(spec=TeamBagEncoder)
-    encoder.fit_transform = lambda X, y=None: np.ones((len(X), 1))
-    encoder.transform = lambda X: np.ones((len(X), 1))
+    encoder.fit_transform = lambda X, y=None: np.ones((len(X), 2))
+    encoder.transform = lambda X: np.ones((len(X), 2))
     return encoder
 
-
+# -----------------------------
+# Sample data fixture
+# -----------------------------
 @pytest.fixture
 def sample_data():
     X = np.random.randint(0, 5, size=(20, 5))
     y = np.random.randint(0, 2, size=20)
     return X, y
 
+# -----------------------------
+# Tests
+# -----------------------------
+def test_predict_before_fit_raises(mock_column_selector, sample_data):
+    X, _ = sample_data
+    predictor = Team1WinProbabilityPredictor(column_selector_cls=mock_column_selector)
+    with pytest.raises(ValueError):
+        predictor.predict(X)
 
 def test_fit_predict_pipeline(
     mock_column_selector,
@@ -84,10 +94,3 @@ def test_fit_predict_pipeline(
     preds = predictor.predict(X)
     assert preds.shape == (X.shape[0],)
     assert set(preds).issubset({0, 1})
-
-
-def test_predict_before_fit_raises(mock_column_selector, sample_data):
-    X, _ = sample_data
-    predictor = Team1WinProbabilityPredictor(column_selector_cls=mock_column_selector)
-    with pytest.raises(ValueError):
-        predictor.predict(X)
