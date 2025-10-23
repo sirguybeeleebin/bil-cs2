@@ -1,0 +1,49 @@
+@startuml
+top to bottom direction
+
+skinparam backgroundColor #F5F5F5
+skinparam shadowing true
+skinparam linetype ortho
+
+skinparam component {
+  BackgroundColor<<API>> LightBlue
+  BackgroundColor<<Daemon>> LightYellow
+}
+
+' Компоненты системы
+component "Пользователь" as User
+component "Сервис Auth" as Auth <<API>>
+component "Сервис Dictionaries" as Dicts <<API>>
+component "Демон ETL" as ETL <<Daemon>>
+component "Демон ML" as ML <<Daemon>>
+component "Сервис Forecaster" as Forecaster <<API>>
+component "Сервис Forecast Results" as Results <<API>>
+component "Redis" as Redis
+
+' Сценарий регистрации и аутентификации
+User --> Auth : регистрация и логин\n(получение JWT)
+
+' Выбор карты, команд, игроков
+User --> Dicts : запрос справочников\n(карты, команды, игроки)
+
+' ETL обновляет данные
+ETL --> Dicts : обновление информации о матчах и игроках
+
+' Обучение модели
+ML --> Redis : публикация "ml_models"\n(путь к модели и метрикам)
+
+' Прогноз
+User --> Forecaster : запрос прогноза
+Forecaster --> Redis : подписка на "ml_models" (актуальная модель)
+Forecaster --> Redis : публикация "forecast_events" (результат прогноза)
+
+' Сбор истории прогнозов
+Results --> Redis : подписка на "forecast_events"
+Results --> Results : сохранение прогноза в MongoDB
+
+note right of Redis
+  Redis используется как брокер сообщений между демонами ML/ETL,
+  сервисом Forecaster и сервисом Forecast Results
+end note
+
+@enduml

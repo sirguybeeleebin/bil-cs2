@@ -1,0 +1,39 @@
+import asyncpg
+
+
+class UserRepository:
+    def __init__(self, pool: asyncpg.Pool):
+        self.pool = pool
+
+    async def get_by_username(self, username: str):
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT id, username, password_hash FROM users WHERE username = $1",
+                    username,
+                )
+                return dict(row) if row else None
+        except:
+            return None
+
+    async def upsert(self, username: str, password_hash: str):
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO users(username, password_hash)
+                    VALUES ($1, $2)
+                    ON CONFLICT(username)
+                    DO UPDATE SET password_hash = EXCLUDED.password_hash
+                    RETURNING id, username
+                    """,
+                    username,
+                    password_hash,
+                )
+                return dict(row)
+        except:
+            return None
+
+
+def make_user_repository(pool: asyncpg.Pool) -> UserRepository:    
+    return UserRepository(pool)
