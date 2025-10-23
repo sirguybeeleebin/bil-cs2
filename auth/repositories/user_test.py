@@ -6,13 +6,16 @@ import pytest
 import pytest_asyncio
 from testcontainers.postgres import PostgresContainer
 
-from auth.repositories.user import UserRepository  
+from auth.repositories.user import UserRepository
 
 # ------------------------
 # Setup logging
 # ------------------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
 logger = logging.getLogger(__name__)
+
 
 # ------------------------
 # Fix for pytest-asyncio scope mismatch
@@ -22,6 +25,7 @@ def event_loop():
     loop = asyncio.new_event_loop()
     yield loop
     loop.close()
+
 
 # ------------------------
 # PostgreSQL container fixture
@@ -43,7 +47,7 @@ async def postgres_container():
             logger.info("PostgreSQL is ready!")
             break
         except Exception as e:
-            logger.debug(f"Attempt {i+1}: PostgreSQL not ready yet ({e})")
+            logger.debug(f"Attempt {i + 1}: PostgreSQL not ready yet ({e})")
             await asyncio.sleep(1)
     else:
         raise RuntimeError("PostgreSQL container did not start in time")
@@ -64,6 +68,7 @@ async def postgres_container():
     logger.info("Stopping PostgreSQL container...")
     container.stop()
 
+
 # ------------------------
 # UserRepository fixture
 # ------------------------
@@ -75,6 +80,7 @@ async def user_repo(postgres_container: asyncpg.Pool):
     async with postgres_container.acquire() as conn:
         await conn.execute("TRUNCATE TABLE users;")
         logger.info("'users' table cleaned after test.")
+
 
 # ------------------------
 # Tests
@@ -104,6 +110,7 @@ async def test_upsert_and_get_by_username(user_repo: UserRepository):
     missing = await user_repo.get_by_username("nonexistent")
     assert missing is None
     logger.info("get_by_username correctly returned None for missing user.")
+
 
 @pytest.mark.asyncio
 async def test_upsert_updates_password(user_repo: UserRepository):

@@ -1,10 +1,11 @@
+# etl/etl.py
 import json
 import logging
 import os
 from collections.abc import Generator
 from typing import List, Optional, Tuple
 
-import httpx
+import asyncpg
 
 log = logging.getLogger("cs2_etl")
 logging.basicConfig(
@@ -12,6 +13,9 @@ logging.basicConfig(
 )
 
 
+# ----------------------------
+# Генератор JSON-файлов
+# ----------------------------
 def _generate_game_raw(
     path_to_games_raw_dir: str,
 ) -> Generator[Tuple[str, dict], None, None]:
@@ -29,10 +33,8 @@ def _generate_game_raw(
 
 
 # ----------------------------
-# Entity Extractors
+# Entity extractors
 # ----------------------------
-
-
 def _extract_map(game: dict) -> Optional[dict]:
     try:
         return {"map_id": game["map"]["id"], "name": game["map"]["name"]}
@@ -63,30 +65,63 @@ def _extract_players(game: dict) -> List[dict]:
 
 
 # ----------------------------
-# HTTP Sender
+# Insert functions
 # ----------------------------
-
-
-def _send_data(client: httpx.Client, endpoint: str, data: List[dict], base_url: str):
-    if not data:
+async def _insert_map(conn: asyncpg.Connection, map_data: dict):
+    if not map_data:
         return
-    response = client.post(f"{base_url}/{endpoint}/save", json=data)
-    response.raise_for_status()
-    log.info(f"✅ Успешно отправлено на {endpoint}: {len(data)} записей")
+    await conn.execute(
+        """
+        INSERT INTO maps(map_id, name)
+        VALUES($1, $2)
+        ON CONFLICT (map_id) DO UPDATE SET name = EXCLUDED.name, updated_at = now()
+        """,
+        map_data["map_id"],
+        map_data["name"],
+    )
 
 
-def load_cs2_data(
-    path_to_games_raw_dir: str,
-    base_url: str,
-    client: httpx.Client,
+async def _insert_teams(conn: asyncpg.Connection, teams: List[dict]):
+    if not teams:
+        return
+    for t in teams:
+        await conn.execute(
+            """
+            INSERT INTO teams(team_id, name)
+            VALUES($1, $2)
+            ON CONFLICT (team_id) DO UPDATE SET name = EXCLUDED.name, updated_at = now()
+            """,
+            t["team_id"],
+            t["name"],
+        )
+
+
+async def _insert_players(conn: asyncpg.Connection, players: List[dict]):
+    if not players:
+        return
+    for p in players:
+        await conn.execute(
+            """
+            INSERT INTO players(player_id, name)
+            VALUES($1, $2)
+            ON CONFLICT (player_id) DO UPDATE SET name = EXCLUDED.name, updated_at = now()
+            """,
+            p["player_id"],
+            p["name"],
+        )
+
+
+# ----------------------------
+# Main ETL function
+# ----------------------------
+async def load_cs2_data(
+    path_to_games_raw_dir: str, pool: asyncpg.Pool
 ) -> dict[str, int]:
-    log.info("🚀 Запуск процесса загрузки данных CS2 через HTTP API (sync)")
+    log.info("🚀 Запуск процесса загрузки данных CS2 в PostgreSQL (asyncpg)")
 
     total, success, error = 0, 0, 0
-    client_provided = client is not None
-    client = client or httpx.Client()
 
-    try:
+    async with pool.acquire() as conn:
         for file_path, game in _generate_game_raw(path_to_games_raw_dir):
             total += 1
             log.info(f"⚙️ Обработка файла игры #{total}: {file_path}")
@@ -95,20 +130,17 @@ def load_cs2_data(
                 teams = _extract_teams(game)
                 players = _extract_players(game)
 
-                _send_data(client, "maps", [map_data] if map_data else [], base_url)
-                _send_data(client, "teams", teams, base_url)
-                _send_data(client, "players", players, base_url)
+                await _insert_map(conn, map_data)
+                await _insert_teams(conn, teams)
+                await _insert_players(conn, players)
 
                 success += 1
-                log.info(f"✅ Игра #{total} успешно загружена через API")
+                log.info(f"✅ Игра #{total} успешно загружена в PostgreSQL")
             except Exception as e:
                 error += 1
                 log.error(
                     f"❌ Ошибка при обработке файла {file_path}: {e}", exc_info=True
                 )
-    finally:
-        if not client_provided:
-            client.close()
 
     log.info("📊 Загрузка завершена")
     log.info(f"Всего файлов: {total}, Успешно: {success}, Ошибки: {error}")

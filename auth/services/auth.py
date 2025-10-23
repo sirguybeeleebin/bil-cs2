@@ -1,10 +1,10 @@
 # services/auth.py
-import os
 from datetime import datetime, timedelta
 from typing import Optional
 
 import bcrypt
 import jwt
+
 from auth.repositories.user import UserRepository
 
 
@@ -17,7 +17,7 @@ class AuthService:
         access_token_expire_minutes: int = 60 * 24,
     ):
         self.user_repo = user_repo
-        self.jwt_secret = jwt_secret 
+        self.jwt_secret = jwt_secret
         self.jwt_algorithm = jwt_algorithm
         self.access_token_expire_minutes = access_token_expire_minutes
 
@@ -46,6 +46,17 @@ class AuthService:
             return None
 
         return self._create_access_token(user["user_id"])
+
+    def decode_token(self, token: str) -> dict:
+        try:
+            payload = jwt.decode(
+                token, self.jwt_secret, algorithms=[self.jwt_algorithm]
+            )
+        except jwt.ExpiredSignatureError:
+            raise ValueError("Token expired")
+        except jwt.InvalidTokenError:
+            raise ValueError("Invalid token")
+        return payload
 
     def _create_access_token(self, user_id: int) -> str:
         expire = datetime.utcnow() + timedelta(minutes=self.access_token_expire_minutes)

@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
@@ -37,9 +36,10 @@ async def test_register_success(auth_service, mock_user_repo):
     mock_user_repo.get_by_username.return_value = None
     mock_user_repo.upsert.return_value = {"user_id": 1, "username": "alice"}
 
-    with patch("bcrypt.hashpw", return_value=b"hashed_pw") as mock_hash, patch(
-        "jwt.encode", return_value="token123"
-    ) as mock_jwt:
+    with (
+        patch("bcrypt.hashpw", return_value=b"hashed_pw") as mock_hash,
+        patch("jwt.encode", return_value="token123") as mock_jwt,
+    ):
         token = await auth_service.register("alice", "password")
 
     mock_user_repo.get_by_username.assert_awaited_once_with("alice")
@@ -97,7 +97,9 @@ async def test_login_nonexistent_user_returns_none(auth_service, mock_user_repo)
 
 def test_create_access_token_contains_user_id(auth_service):
     token = auth_service._create_access_token(42)
-    payload = jwt.decode(token, auth_service.jwt_secret, algorithms=[auth_service.jwt_algorithm])
+    payload = jwt.decode(
+        token, auth_service.jwt_secret, algorithms=[auth_service.jwt_algorithm]
+    )
     assert payload["user_id"] == 42
     assert "exp" in payload
     # Ensure expiration is roughly correct

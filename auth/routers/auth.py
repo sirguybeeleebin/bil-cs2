@@ -4,6 +4,7 @@ import string
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, validator
 from services.auth import AuthService
+from starlette import status
 
 
 class RegisterRequest(BaseModel):
@@ -45,6 +46,15 @@ class AuthResponse(BaseModel):
     token: str = Field(..., example="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
 
 
+class VerifyRequest(BaseModel):
+    token: str = Field(..., example="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
+
+
+class VerifyResponse(BaseModel):
+    user_id: int
+    username: str | None = None
+
+
 def make_auth_router(auth_service: AuthService) -> APIRouter:
     router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -54,15 +64,35 @@ def make_auth_router(auth_service: AuthService) -> APIRouter:
             token = await auth_service.register(req.username, req.password)
             return AuthResponse(token=token)
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     @router.post("/login", response_model=AuthResponse)
     async def login(req: LoginRequest):
         token = await auth_service.login(req.username, req.password)
         if not token:
             raise HTTPException(
-                status_code=401, detail="Неверное имя пользователя или пароль"
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Неверное имя пользователя или пароль",
             )
         return AuthResponse(token=token)
+
+    @router.post("/verify", response_model=VerifyResponse)
+    async def verify_token(req: VerifyRequest):
+        try:
+            payload = auth_service.decode_token(req.token)
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Неверный или просроченный токен",
+            )
+
+        user = await auth_service.user_repo.get_by_id(payload["user_id"])
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Пользователь не найден",
+            )
+
+        return VerifyResponse(user_id=user["user_id"], username=user.get("username"))
 
     return router
