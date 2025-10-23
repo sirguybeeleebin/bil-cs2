@@ -42,38 +42,55 @@ def parse_config() -> dict:
     return config
 
 
+async def train_model_once(config: dict, redis_conn: redis.Redis) -> dict:
+    """
+    Однократная тренировка модели и публикация результатов в Redis.
+    Возвращает словарь с путями к predictor и метрикам.
+    """
+    task_id = str(uuid.uuid4())
+    log.info("⚙️ Запуск однократной тренировки модели CS2...")
+    result = {}
+
+    try:
+        predictor, metrics = train_model(config["games_dir"])
+
+        predictor_path = os.path.join(config["results_dir"], f"{task_id}.joblib")
+        metrics_path = os.path.join(config["results_dir"], f"{task_id}.json")
+
+        joblib.dump(predictor, predictor_path)
+        log.info(f"✅ Predictor сохранен: {predictor_path}")
+
+        with open(metrics_path, "w", encoding="utf-8") as f:
+            json.dump(metrics, f, ensure_ascii=False, indent=4)
+        log.info(f"✅ Метрики сохранены: {metrics_path}")
+
+        message = json.dumps(
+            {
+                "predictor_path": predictor_path,
+                "metrics_path": metrics_path,
+                "task_id": task_id,
+            }
+        )
+        await redis_conn.lpush(config["redis_queue"], message)
+        log.info(
+            f"📤 Сообщение опубликовано в Redis queue '{config['redis_queue']}': {message}"
+        )
+
+        result = {
+            "task_id": task_id,
+            "predictor_path": predictor_path,
+            "metrics_path": metrics_path,
+        }
+
+    except Exception as e:
+        log.error(f"❌ Ошибка при обучении модели: {e}", exc_info=True)
+
+    return result
+
+
 async def train_model_periodically(config: dict, redis_conn: redis.Redis):
     while True:
-        task_id = str(uuid.uuid4())
-        log.info("⚙️ Запуск задачи обучения модели CS2...")
-        try:
-            predictor, metrics = train_model(config["games_dir"])
-
-            predictor_path = os.path.join(config["results_dir"], f"{task_id}.joblib")
-            metrics_path = os.path.join(config["results_dir"], f"{task_id}.json")
-
-            joblib.dump(predictor, predictor_path)
-            log.info(f"✅ Predictor сохранен: {predictor_path}")
-
-            with open(metrics_path, "w", encoding="utf-8") as f:
-                json.dump(metrics, f, ensure_ascii=False, indent=4)
-            log.info(f"✅ Метрики сохранены: {metrics_path}")
-
-            message = json.dumps(
-                {
-                    "predictor_path": predictor_path,
-                    "metrics_path": metrics_path,
-                    "task_id": task_id,
-                }
-            )
-            await redis_conn.lpush(config["redis_queue"], message)
-            log.info(
-                f"📤 Сообщение опубликовано в Redis queue '{config['redis_queue']}': {message}"
-            )
-
-        except Exception as e:
-            log.error(f"❌ Ошибка при обучении модели: {e}", exc_info=True)
-
+        await train_model_once(config, redis_conn)
         log.info(f"⏱ Ждем {config['train_interval']} секунд до следующей тренировки...")
         await asyncio.sleep(config["train_interval"])
 

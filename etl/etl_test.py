@@ -1,157 +1,166 @@
+# tests/test_etl_pg.py
+import asyncio
 import json
-from unittest.mock import MagicMock
+import logging
 
+import asyncpg
 import pytest
+import pytest_asyncio
+from testcontainers.postgres import PostgresContainer
 
-from etl.etl import (
-    _extract_map,
-    _extract_players,
-    _extract_teams,
-    _generate_game_raw,
-    _send_data,
-    load_cs2_data,
+from etl.etl import load_cs2_data  # твоя функция ETL с asyncpg.Pool
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
-
-# ----------------------------
-# Fixtures
-# ----------------------------
+logger = logging.getLogger(__name__)
 
 
-@pytest.fixture
-def sample_game():
-    return {
-        "map": {"id": 1, "name": "Dust2"},
+# ------------------------
+# Фикстура для asyncio event loop
+# ------------------------
+@pytest.fixture(scope="module")
+def event_loop():
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
+
+
+# ------------------------
+# Фикстура PostgreSQL контейнера
+# ------------------------
+@pytest_asyncio.fixture(scope="module")
+async def postgres_container():
+    logger.info("🚀 Запуск PostgreSQL контейнера...")
+    container = PostgresContainer("postgres:15")
+    container.start()
+    dsn = container.get_connection_url().replace("+psycopg2", "")
+
+    # Ждём, пока PostgreSQL готов
+    pool = None
+    for _ in range(30):
+        try:
+            pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=5)
+            async with pool.acquire() as conn:
+                await conn.execute("SELECT 1;")
+            break
+        except Exception:
+            await asyncio.sleep(1)
+    else:
+        raise RuntimeError("PostgreSQL container did not start in time")
+
+    # Создаём таблицы
+    async with pool.acquire() as conn:
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS maps (
+            map_id INT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS teams (
+            team_id INT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS players (
+            player_id INT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ DEFAULT now()
+        );
+        """)
+
+    yield pool
+
+    logger.info("🛑 Закрываем пул и останавливаем контейнер...")
+    await pool.close()
+    container.stop()
+
+
+# ------------------------
+# Очистка таблиц после каждого теста
+# ------------------------
+@pytest_asyncio.fixture
+async def clean_db(postgres_container: asyncpg.Pool):
+    yield
+    async with postgres_container.acquire() as conn:
+        await conn.execute("TRUNCATE TABLE maps, teams, players RESTART IDENTITY;")
+
+
+# ------------------------
+# Тесты
+# ------------------------
+@pytest.mark.asyncio
+async def test_load_cs2_data_inserts(postgres_container, clean_db, tmp_path):
+    # Создаём тестовый JSON файл
+    game_data = {
+        "map": {"id": 1, "name": "Test Map"},
         "players": [
             {
-                "player": {"id": 101, "name": "Alice"},
-                "team": {"id": 201, "name": "TeamA"},
+                "player": {"id": 101, "name": "Player One"},
+                "team": {"id": 201, "name": "Team A"},
             },
             {
-                "player": {"id": 102, "name": "Bob"},
-                "team": {"id": 201, "name": "TeamA"},
+                "player": {"id": 102, "name": "Player Two"},
+                "team": {"id": 202, "name": "Team B"},
             },
         ],
     }
+    test_file = tmp_path / "game1.json"
+    test_file.write_text(json.dumps(game_data), encoding="utf-8")
 
-
-@pytest.fixture
-def temp_game_file(tmp_path, sample_game):
-    file_path = tmp_path / "game1.json"
-    file_path.write_text(json.dumps(sample_game))
-    return tmp_path
-
-
-@pytest.fixture
-def temp_bad_file(tmp_path):
-    file_path = tmp_path / "bad.json"
-    file_path.write_text("{invalid_json")
-    return tmp_path
-
-
-# ----------------------------
-# Test _generate_game_raw
-# ----------------------------
-
-
-def test_generate_game_raw_yields_file(temp_game_file, sample_game):
-    results = list(_generate_game_raw(str(temp_game_file)))
-    assert len(results) == 1
-    file_path, game = results[0]
-    assert game == sample_game
-    assert file_path.endswith("game1.json")
-
-
-def test_generate_game_raw_skips_invalid_file(temp_bad_file):
-    results = list(_generate_game_raw(str(temp_bad_file)))
-    assert results == []
-
-
-# ----------------------------
-# Test _extract_map
-# ----------------------------
-
-
-def test_extract_map_returns_correct_map(sample_game):
-    map_data = _extract_map(sample_game)
-    assert map_data == {"map_id": 1, "name": "Dust2"}
-
-
-def test_extract_map_handles_missing_map():
-    map_data = _extract_map({"players": []})
-    assert map_data is None
-
-
-# ----------------------------
-# Test _extract_teams
-# ----------------------------
-
-
-def test_extract_teams_returns_unique_teams(sample_game):
-    teams = _extract_teams(sample_game)
-    assert teams == [{"team_id": 201, "name": "TeamA"}]
-
-
-def test_extract_teams_handles_no_teams():
-    teams = _extract_teams({"players": []})
-    assert teams == []
-
-
-# ----------------------------
-# Test _extract_players
-# ----------------------------
-
-
-def test_extract_players_returns_unique_players(sample_game):
-    players = _extract_players(sample_game)
-    expected = [
-        {"player_id": 101, "name": "Alice"},
-        {"player_id": 102, "name": "Bob"},
-    ]
-    assert players == expected
-
-
-def test_extract_players_handles_no_players():
-    players = _extract_players({"players": []})
-    assert players == []
-
-
-# ----------------------------
-# Test _send_data
-# ----------------------------
-
-
-def test_send_data_calls_post():
-    mock_client = MagicMock()
-    data = [{"id": 1}]
-    _send_data(mock_client, "maps", data, "http://testserver")
-    mock_client.post.assert_called_once_with("http://testserver/maps/save", json=data)
-
-
-def test_send_data_skips_empty():
-    mock_client = MagicMock()
-    _send_data(mock_client, "maps", [], "http://testserver")
-    mock_client.post.assert_not_called()
-
-
-# ----------------------------
-# Test load_cs2_data
-# ----------------------------
-
-
-def test_load_cs2_data_calls_send_data(temp_game_file):
-    mock_client = MagicMock()
-    result = load_cs2_data(str(temp_game_file), "http://testserver", client=mock_client)
+    result = await load_cs2_data(str(tmp_path), postgres_container)
     assert result["total"] == 1
     assert result["success"] == 1
     assert result["error"] == 0
-    # Should call for maps, teams, players
-    assert mock_client.post.call_count == 3
+
+    # Проверяем данные в БД
+    async with postgres_container.acquire() as conn:
+        map_row = await conn.fetchrow("SELECT * FROM maps WHERE map_id=1")
+        assert map_row["name"] == "Test Map"
+
+        team_rows = await conn.fetch("SELECT * FROM teams")
+        names = {t["name"] for t in team_rows}
+        assert names == {"Team A", "Team B"}
+
+        player_rows = await conn.fetch("SELECT * FROM players")
+        player_names = {p["name"] for p in player_rows}
+        assert player_names == {"Player One", "Player Two"}
 
 
-def test_load_cs2_data_handles_invalid_file(temp_bad_file):
-    mock_client = MagicMock()
-    result = load_cs2_data(str(temp_bad_file), "http://testserver", client=mock_client)
-    assert result["total"] == 0
-    assert result["success"] == 0
+@pytest.mark.asyncio
+async def test_load_multiple_files(postgres_container, clean_db, tmp_path):
+    # Создаём два файла игр
+    games = [
+        {
+            "map": {"id": 1, "name": "Map One"},
+            "players": [
+                {"player": {"id": 101, "name": "P1"}, "team": {"id": 201, "name": "T1"}}
+            ],
+        },
+        {
+            "map": {"id": 2, "name": "Map Two"},
+            "players": [
+                {"player": {"id": 102, "name": "P2"}, "team": {"id": 202, "name": "T2"}}
+            ],
+        },
+    ]
+    for i, g in enumerate(games, start=1):
+        f = tmp_path / f"game{i}.json"
+        f.write_text(json.dumps(g), encoding="utf-8")
+
+    result = await load_cs2_data(str(tmp_path), postgres_container)
+    assert result["total"] == 2
+    assert result["success"] == 2
     assert result["error"] == 0
-    mock_client.post.assert_not_called()
+
+    # Проверяем данные в БД
+    async with postgres_container.acquire() as conn:
+        map_rows = await conn.fetch("SELECT * FROM maps")
+        assert len(map_rows) == 2
+        team_rows = await conn.fetch("SELECT * FROM teams")
+        assert len(team_rows) == 2
+        player_rows = await conn.fetch("SELECT * FROM players")
+        assert len(player_rows) == 2
