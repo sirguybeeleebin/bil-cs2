@@ -1,98 +1,216 @@
 import re
-import string
+from datetime import datetime
+from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel, Field, validator
-from services.auth import AuthService
-from starlette import status
+
+from auth.services.auth import AuthService
 
 
-class RegisterRequest(BaseModel):
-    username: str = Field(..., example="user_123!")
-    password: str = Field(..., example="Secure123!")
+class UserRegisterRequest(BaseModel):
+    username: str = Field(
+        ...,
+        example="user1",
+        title="Имя пользователя",
+        description="Уникальное имя пользователя",
+    )
+    password: str = Field(
+        ...,
+        example="StrongPassword123",
+        title="Пароль",
+        description="Пароль пользователя",
+    )
 
     @validator("username")
-    def username_valid(cls, v):
-        if len(v) < 3 or len(v) > 50:
-            raise ValueError("Имя пользователя должно быть от 3 до 50 символов")
-        allowed_chars = string.ascii_letters + string.digits + string.punctuation
-        if any(c not in allowed_chars for c in v):
+    def validate_username(cls, v):
+        if not re.fullmatch(r"[a-zA-Z0-9_]{3,30}", v):
             raise ValueError(
-                "Имя пользователя может содержать только английские буквы, цифры и символы"
+                "Имя пользователя должно быть 3-30 символов, только латиница, цифры и _"
             )
         return v
 
     @validator("password")
-    def password_valid(cls, v):
+    def validate_password(cls, v):
         if len(v) < 8:
-            raise ValueError("Пароль должен содержать не менее 8 символов")
+            raise ValueError("Пароль должен быть не менее 8 символов")
         if not re.search(r"[A-Z]", v):
             raise ValueError("Пароль должен содержать хотя бы одну заглавную букву")
         if not re.search(r"[a-z]", v):
             raise ValueError("Пароль должен содержать хотя бы одну строчную букву")
         if not re.search(r"\d", v):
             raise ValueError("Пароль должен содержать хотя бы одну цифру")
-        if not re.search(r"[^\w\s]", v):
-            raise ValueError("Пароль должен содержать хотя бы один специальный символ")
         return v
 
 
-class LoginRequest(BaseModel):
-    username: str = Field(..., example="user_123!")
-    password: str = Field(..., example="Secure123!")
+class UserRegisterResponse(BaseModel):
+    user_id: UUID = Field(
+        ...,
+        title="ID пользователя",
+        description="Уникальный идентификатор пользователя",
+    )
+    username: str = Field(
+        ...,
+        title="Имя пользователя",
+        description="Имя пользователя",
+    )
+    created_at: datetime = Field(
+        ...,
+        title="Дата создания",
+        description="Дата и время создания пользователя",
+    )
+    updated_at: datetime = Field(
+        ...,
+        title="Дата обновления",
+        description="Дата и время последнего обновления пользователя",
+    )
 
 
-class AuthResponse(BaseModel):
-    token: str = Field(..., example="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
+class UserLoginRequest(BaseModel):
+    username: str = Field(
+        ...,
+        title="Имя пользователя",
+        description="Имя пользователя",
+    )
+    password: str = Field(
+        ...,
+        title="Пароль",
+        description="Пароль пользователя",
+    )
 
 
-class VerifyRequest(BaseModel):
-    token: str = Field(..., example="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
+class UserLoginResponse(BaseModel):
+    access_token: str = Field(
+        ...,
+        title="Токен доступа",
+        description="JWT токен для авторизации",
+    )
+    token_type: str = Field(
+        "bearer",
+        title="Тип токена",
+        description="Тип токена, обычно 'bearer'",
+    )
 
 
-class VerifyResponse(BaseModel):
-    user_id: int
-    username: str | None = None
+class ServiceRegisterRequest(BaseModel):
+    client_id: str = Field(
+        ...,
+        example="etl_001",
+        title="ID сервиса",
+        description="Уникальный идентификатор сервиса",
+    )
+    client_secret: str = Field(
+        ...,
+        example="some-secure-secret",
+        title="Секрет сервиса",
+        description="Секрет сервиса для аутентификации",
+    )
+
+
+class ServiceRegisterResponse(BaseModel):
+    service_id: UUID = Field(
+        ...,
+        title="ID сервиса",
+        description="Уникальный идентификатор сервиса",
+    )
+    client_id: str = Field(
+        ...,
+        title="ID сервиса",
+        description="Идентификатор сервиса",
+    )
+    created_at: datetime = Field(
+        ...,
+        title="Дата создания",
+        description="Дата и время создания сервиса",
+    )
+    updated_at: datetime = Field(
+        ...,
+        title="Дата обновления",
+        description="Дата и время последнего обновления сервиса",
+    )
+
+
+class ServiceLoginRequest(BaseModel):
+    client_id: str = Field(
+        ...,
+        title="ID сервиса",
+        description="Идентификатор сервиса",
+    )
+    client_secret: str = Field(
+        ...,
+        title="Секрет сервиса",
+        description="Секрет сервиса для аутентификации",
+    )
+
+
+class ServiceLoginResponse(BaseModel):
+    access_token: str = Field(
+        ...,
+        title="Токен доступа",
+        description="JWT токен для сервиса",
+    )
+    token_type: str = Field(
+        "bearer",
+        title="Тип токена",
+        description="Тип токена, обычно 'bearer'",
+    )
 
 
 def make_auth_router(auth_service: AuthService) -> APIRouter:
-    router = APIRouter(prefix="/auth", tags=["auth"])
+    router = APIRouter(prefix="/auth")
 
-    @router.post("/register", response_model=AuthResponse)
-    async def register(req: RegisterRequest):
-        try:
-            token = await auth_service.register(req.username, req.password)
-            return AuthResponse(token=token)
-        except ValueError as e:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    @router.post("/register", response_model=UserRegisterResponse)
+    async def register(data: UserRegisterRequest):
+        user = await auth_service.register_user(data.username, data.password)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Пользователь уже существует",
+            )
+        return user
 
-    @router.post("/login", response_model=AuthResponse)
-    async def login(req: LoginRequest):
-        token = await auth_service.login(req.username, req.password)
+    @router.post("/login", response_model=UserLoginResponse)
+    async def login(data: UserLoginRequest):
+        token = await auth_service.authenticate_user(data.username, data.password)
         if not token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Неверное имя пользователя или пароль",
+                detail="Неверные учетные данные",
             )
-        return AuthResponse(token=token)
+        return {"access_token": token}
 
-    @router.post("/verify", response_model=VerifyResponse)
-    async def verify_token(req: VerifyRequest):
-        try:
-            payload = auth_service.decode_token(req.token)
-        except Exception:
+    @router.post("/service/register", response_model=ServiceRegisterResponse)
+    async def register_service(data: ServiceRegisterRequest):
+        service = await auth_service.register_service(
+            data.client_id, data.client_secret
+        )
+        if not service:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Сервис уже существует"
+            )
+        return service
+
+    @router.post("/service/token", response_model=ServiceLoginResponse)
+    async def service_token(data: ServiceLoginRequest):
+        token = await auth_service.authenticate_service(
+            data.client_id, data.client_secret
+        )
+        if not token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Неверный или просроченный токен",
+                detail="Неверные учетные данные",
             )
+        return {"access_token": token}
 
-        user = await auth_service.user_repo.get_by_id(payload["user_id"])
+    @router.get("/me", response_model=UserRegisterResponse)
+    async def get_me(
+        user_id: UUID = Header(
+            ..., title="ID пользователя", description="ID текущего пользователя"
+        ),
+    ):
+        user = await auth_service.get_me(user_id)
         if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Пользователь не найден",
-            )
-
-        return VerifyResponse(user_id=user["user_id"], username=user.get("username"))
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+        return user
 
     return router

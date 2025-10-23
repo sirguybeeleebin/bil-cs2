@@ -1,49 +1,36 @@
-import logging
-
 import asyncpg
-
-log = logging.getLogger("user_repository")
 
 
 class UserRepository:
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
 
-    async def get_by_username(self, username: str):
+    async def upsert_user(self, username: str, password: str) -> dict | None:
+        query = """
+        INSERT INTO users (username, password, created_at, updated_at)
+        VALUES ($1, $2, NOW(), NOW())
+        ON CONFLICT (username) DO UPDATE
+        SET password = EXCLUDED.password,
+            updated_at = NOW()
+        RETURNING id, username, created_at, updated_at
+        """
         try:
             async with self.pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    "SELECT id, username, password_hash FROM users WHERE username = $1",
-                    username,
-                )
-                return dict(row) if row else None
-        except asyncpg.PostgresError as e:
-            log.error(f"Database error in get_by_username: {e}")
-            return None
-        except Exception as e:
-            log.exception(f"Unexpected error in get_by_username: {e}")
+                row = await conn.fetchrow(query, username, password)
+            return dict(row)
+        except asyncpg.PostgresError:
             return None
 
-    async def upsert(self, username: str, password_hash: str):
+    async def get_user_by_username(self, username: str) -> dict | None:
+        query = """
+        SELECT id, username, password, created_at, updated_at 
+        FROM users WHERE username = $1
+        """
         try:
             async with self.pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    """
-                    INSERT INTO users(username, password_hash)
-                    VALUES ($1, $2)
-                    ON CONFLICT(username)
-                    DO UPDATE SET password_hash = EXCLUDED.password_hash
-                    RETURNING id, username
-                    """,
-                    username,
-                    password_hash,
-                )
-                return dict(row)
-        except asyncpg.PostgresError as e:
-            log.error(f"Database error in upsert: {e}")
-            return None
-        except Exception as e:
-            log.exception(f"Unexpected error in upsert: {e}")
+                row = await conn.fetchrow(query, username)
+            return dict(row) if row else None
+        except asyncpg.PostgresError:
             return None
 
 

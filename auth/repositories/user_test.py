@@ -1,133 +1,89 @@
-import asyncio
 import logging
 
 import asyncpg
 import pytest
-import pytest_asyncio
 from testcontainers.postgres import PostgresContainer
 
-from auth.repositories.user import UserRepository
+from auth.repositories.user import make_user_repository
 
-# ------------------------
-# Setup logging
-# ------------------------
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
-)
-logger = logging.getLogger(__name__)
-
-
-# ------------------------
-# Fix for pytest-asyncio scope mismatch
-# ------------------------
-@pytest.fixture(scope="module")
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+logger = logging.getLogger("test_logger")
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 
-# ------------------------
-# PostgreSQL container fixture
-# ------------------------
-@pytest_asyncio.fixture(scope="module")
-async def postgres_container():
-    logger.info("Starting PostgreSQL container...")
-    container = PostgresContainer("postgres:15")
-    container.start()
-    dsn = container.get_connection_url().replace("+psycopg2", "")
-    logger.info(f"PostgreSQL container DSN: {dsn}")
-
-    pool = None
-    for i in range(30):
-        try:
-            pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=5)
-            async with pool.acquire() as conn:
-                await conn.execute("SELECT 1;")
-            logger.info("PostgreSQL is ready!")
-            break
-        except Exception as e:
-            logger.debug(f"Attempt {i + 1}: PostgreSQL not ready yet ({e})")
-            await asyncio.sleep(1)
-    else:
-        raise RuntimeError("PostgreSQL container did not start in time")
-
-    # Ensure users table exists
+async def setup_database():
+    postgres = PostgresContainer("postgres:15")
+    postgres.start()
+    dsn = postgres.get_connection_url().replace("postgresql+psycopg2", "postgresql")
+    logger.info("PostgreSQL container started with DSN: %s", dsn)
+    pool = await asyncpg.create_pool(dsn=dsn)
     async with pool.acquire() as conn:
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
-            username VARCHAR(50) UNIQUE NOT NULL,
-            password_hash VARCHAR(256) NOT NULL
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW()
         );
         """)
-    yield pool
-
-    logger.info("Closing PostgreSQL pool...")
-    await pool.close()
-    logger.info("Stopping PostgreSQL container...")
-    container.stop()
+    user_repo = make_user_repository(pool)
+    return postgres, pool, user_repo
 
 
-# ------------------------
-# UserRepository fixture
-# ------------------------
-@pytest_asyncio.fixture
-async def user_repo(postgres_container: asyncpg.Pool):
-    repo = UserRepository(pool=postgres_container)
-    yield repo
-    # Clean up table after each test
-    async with postgres_container.acquire() as conn:
-        await conn.execute("TRUNCATE TABLE users;")
-        logger.info("'users' table cleaned after test.")
-
-
-# ------------------------
-# Tests
-# ------------------------
 @pytest.mark.asyncio
-async def test_upsert_and_get_by_username(user_repo: UserRepository):
-    logger.info("Running test_upsert_and_get_by_username...")
-
-    username = "testuser"
-    password_hash = "hashedpassword123"
-
-    # Test upsert
-    result = await user_repo.upsert(username, password_hash)
-    assert result is not None
-    assert result["username"] == username
-    assert "id" in result
-    logger.info("Upsert successful.")
-
-    # Test get_by_username
-    user = await user_repo.get_by_username(username)
+async def test_upsert_user():
+    logger.info("Starting test_upsert_user")
+    postgres, pool, user_repo = await setup_database()
+    logger.info("Upserting user 'testuser' with password 'password123'")
+    user = await user_repo.upsert_user("testuser", "password123")
     assert user is not None
-    assert user["username"] == username
-    assert "password_hash" in user
-    logger.info("get_by_username returned expected result.")
-
-    # Test get_by_username for non-existent user
-    missing = await user_repo.get_by_username("nonexistent")
-    assert missing is None
-    logger.info("get_by_username correctly returned None for missing user.")
+    logger.info("User inserted: %s", user)
+    await pool.close()
+    postgres.stop()
+    logger.info("Test finished: test_upsert_user")
 
 
 @pytest.mark.asyncio
-async def test_upsert_updates_password(user_repo: UserRepository):
-    username = "updateuser"
-    password1 = "firsthash"
-    password2 = "secondhash"
+async def test_get_user():
+    logger.info("Starting test_get_user")
+    postgres, pool, user_repo = await setup_database()
+    await user_repo.upsert_user("testuser", "password123")
+    fetched_user = await user_repo.get_user_by_username("testuser")
+    assert fetched_user is not None
+    assert fetched_user["username"] == "testuser"
+    logger.info("User fetched: %s", fetched_user)
+    await pool.close()
+    postgres.stop()
+    logger.info("Test finished: test_get_user")
 
-    # Insert first time
-    res1 = await user_repo.upsert(username, password1)
-    assert res1 is not None
 
-    # Update password
-    res2 = await user_repo.upsert(username, password2)
-    assert res2 is not None
-    assert res2["username"] == username
+@pytest.mark.asyncio
+async def test_update_user_password():
+    logger.info("Starting test_update_user_password")
+    postgres, pool, user_repo = await setup_database()
+    user = await user_repo.upsert_user("testuser", "password123")
+    updated_user = await user_repo.upsert_user("testuser", "newpass456")
+    assert updated_user["id"] == user["id"]
+    logger.info("User updated: %s", updated_user)
+    fetched_user = await user_repo.get_user_by_username("testuser")
+    assert fetched_user["password"] == "newpass456"
+    logger.info("Password verified: %s", fetched_user["password"])
+    await pool.close()
+    postgres.stop()
+    logger.info("Test finished: test_update_user_password")
 
-    # Fetch and verify password_hash updated
-    user = await user_repo.get_by_username(username)
-    assert user["password_hash"] == password2
-    logger.info("Password hash updated correctly on upsert.")
+
+@pytest.mark.asyncio
+async def test_get_nonexistent_user():
+    logger.info("Starting test_get_nonexistent_user")
+    postgres, pool, user_repo = await setup_database()
+    user = await user_repo.get_user_by_username("nonexistent")
+    assert user is None
+    logger.info("Nonexistent user correctly returned None")
+    await pool.close()
+    postgres.stop()
+    logger.info("Test finished: test_get_nonexistent_user")
