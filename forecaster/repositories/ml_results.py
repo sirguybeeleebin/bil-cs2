@@ -1,8 +1,6 @@
-import asyncpg
 import logging
-import joblib
-from pathlib import Path
-from typing import Optional
+
+import asyncpg
 
 log = logging.getLogger("cs2_forecaster")
 
@@ -11,7 +9,9 @@ class MLResultsRepository:
     def __init__(self, pg_pool: asyncpg.pool.Pool):
         self.pg_pool = pg_pool
 
-    async def upsert(self, task_id: str, predictor_path: str, metrics_path: str) -> bool:
+    async def upsert(
+        self, task_id: str, predictor_path: str, metrics_path: str
+    ) -> bool:
         try:
             async with self.pg_pool.acquire() as conn:
                 await conn.execute(
@@ -31,37 +31,9 @@ class MLResultsRepository:
                 )
             log.info(f"✅ ML result upserted: task_id={task_id}")
             return True
-        except Exception as e:
+        except asyncpg.PostgresError as e:  # <-- catch only DB-related errors
             log.error(f"❌ Failed to upsert ML result: {e}", exc_info=True)
             return False
-
-    async def get_active_ml_pipeline(self) -> Optional[object]:
-        """
-        Возвращает последнюю сохранённую модель (Joblib predictor) из БД.
-        """
-        try:
-            async with self.pg_pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    """
-                    SELECT predictor_path
-                    FROM ml_results
-                    ORDER BY updated_at DESC
-                    LIMIT 1
-                    """
-                )
-                if not row:
-                    log.warning("⚠️ No ML result found in database")
-                    return None
-
-                predictor_path = Path(row["predictor_path"])
-                if not predictor_path.exists():
-                    log.error(f"❌ Predictor file not found: {predictor_path}")
-                    return None
-
-                predictor = joblib.load(predictor_path)
-                log.info(f"✅ Loaded ML predictor from: {predictor_path}")
-                return predictor
-
-        except Exception as e:
-            log.error(f"❌ Failed to load active ML pipeline: {e}", exc_info=True)
-            return None
+        except Exception as e:  # <-- catch unexpected errors separately
+            log.exception(f"❌ Unexpected error during ML result upsert: {e}")
+            return False

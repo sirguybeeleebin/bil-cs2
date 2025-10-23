@@ -1,4 +1,8 @@
+import logging
+
 import asyncpg
+
+log = logging.getLogger("user_repository")
 
 
 class UserRepository:
@@ -13,7 +17,11 @@ class UserRepository:
                     username,
                 )
                 return dict(row) if row else None
-        except:
+        except asyncpg.PostgresError as e:
+            log.error(f"Database error in get_by_username: {e}")
+            return None
+        except Exception as e:
+            log.exception(f"Unexpected error in get_by_username: {e}")
             return None
 
     async def upsert(self, username: str, password_hash: str):
@@ -31,9 +39,13 @@ class UserRepository:
                     password_hash,
                 )
                 return dict(row)
-        except:
+        except asyncpg.PostgresError as e:
+            log.error(f"Database error in upsert: {e}")
+            return None
+        except Exception as e:
+            log.exception(f"Unexpected error in upsert: {e}")
             return None
 
 
-def make_user_repository(pool: asyncpg.Pool) -> UserRepository:    
+def make_user_repository(pool: asyncpg.Pool) -> UserRepository:
     return UserRepository(pool)

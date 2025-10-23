@@ -1,18 +1,18 @@
+import argparse
 import asyncio
 import json
 import logging
-from typing import AsyncGenerator, Optional
-from pathlib import Path
-
-from fastapi import FastAPI
-import redis.asyncio as redis
-import asyncpg
 import os
-import argparse
-from dotenv import load_dotenv
-import joblib
+from pathlib import Path
+from typing import AsyncGenerator, Optional
 
-from forecaster.repositories.ml_results import MLResultsRepository  
+import asyncpg
+import joblib
+import redis.asyncio as redis
+from dotenv import load_dotenv
+from fastapi import FastAPI
+
+from forecaster.repositories.ml_results import MLResultsRepository
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
@@ -51,7 +51,7 @@ async def consume_models(
     redis_client: redis.Redis,
     channel_name: str,
     ml_repo: MLResultsRepository,
-    app: FastAPI
+    app: FastAPI,
 ):
     pubsub = redis_client.pubsub()
     await pubsub.subscribe(channel_name)
@@ -76,7 +76,9 @@ async def consume_models(
             if path.exists():
                 predictor = joblib.load(path)
                 app.state.predictor = predictor
-                log.info(f"✅ Active ML predictor updated in memory from: {predictor_path}")
+                log.info(
+                    f"✅ Active ML predictor updated in memory from: {predictor_path}"
+                )
             else:
                 log.error(f"❌ Predictor file not found: {predictor_path}")
 
@@ -112,7 +114,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
             predictor = joblib.load(latest_path)
             log.info(f"✅ Loaded active ML predictor from: {latest_path}")
         except Exception as e:
-            log.error(f"❌ Failed to load ML predictor from {latest_path}: {e}", exc_info=True)
+            log.error(
+                f"❌ Failed to load ML predictor from {latest_path}: {e}", exc_info=True
+            )
     else:
         log.warning("⚠️ No ML predictor found in database at startup")
 
