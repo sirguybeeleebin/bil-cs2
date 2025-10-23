@@ -11,7 +11,7 @@ lint:
 	poetry run ruff check $(SRC)
 	
 test:
-	poetry run pytest -v --disable-warnings -p no:cacheprovider
+	poetry run pytest -v --disable-warnings -p no:cacheprovider --log-cli-level=INFO
 
 clickhouse-up:	
 	docker run -d \
@@ -33,14 +33,14 @@ rabbitmq-up:
 		-e RABBITMQ_DEFAULT_PASS=cs2_password \
 		rabbitmq:3-management
 
-postgres-up:
+postgres-dictionaries-up:
 	docker run -d \
 		--name postgres \
 		-p 5432:5432 \
-		-e POSTGRES_DB=cs2_db \
-		-e POSTGRES_USER=cs2_user \
-		-e POSTGRES_PASSWORD=cs2_password \
-		-v postgres_data:/var/lib/postgresql/data \
+		-e POSTGRES_DB=cs2_dictionaries_db \
+		-e POSTGRES_USER=cs2_dictionaries_user \
+		-e POSTGRES_PASSWORD=cs2_dictionaries_password \
+		-v postgres_dictionaries_data:/var/lib/postgresql/data \
 		postgres:15-alpine
 
 redis-up:
