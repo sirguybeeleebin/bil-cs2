@@ -11,9 +11,8 @@ def generate_game_raw(path_to_dir: str) -> Generator[dict, None, None]:
     for json_file in path.glob("*.json"):
         try:
             with open(json_file, "r", encoding="utf-8") as f:
-                data: list[dict] = json.load(f)
-                for game in data:
-                    yield game
+                game = json.load(f)  # читаем один файл как словарь
+                yield game
         except json.JSONDecodeError as e:
             logger.error(f"Не удалось декодировать JSON из файла {json_file.name}: {e}")
         except Exception as e:

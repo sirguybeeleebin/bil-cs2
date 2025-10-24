@@ -20,3 +20,6 @@ prune:
 	docker volume rm bil-cs2_mongo_data
 	docker volume rm bil-cs2_postgres_data
 
+up:
+	docker compose --env-file .env up --build
+

@@ -1,12 +1,11 @@
 import logging
 import os
+from pathlib import Path
 
-import httpx
 from celery import Celery, signals
 from dotenv import load_dotenv
 
 from etl.extract import generate_game_raw
-from etl.get_service_token import get_service_token
 from etl.load import load_game_flatten, load_map, load_players, load_teams
 from etl.transform import (
     transform_game_flatten,
@@ -18,18 +17,22 @@ from etl.transform import (
 
 load_dotenv()
 
-BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
-BACKEND_URL = os.getenv("CELERY_BACKEND_URL", "redis://localhost:6379/1")
-MAP_URL = os.getenv("MAP_URL", "http://example.com/maps")
-TEAM_URL = os.getenv("TEAM_URL", "http://example.com/teams")
-PLAYER_URL = os.getenv("PLAYER_URL", "http://example.com/players")
-GAME_FLATTEN_URL = os.getenv("GAME_FLATTEN_URL", "http://example.com/games_flatten")
-GAMES_RAW_DIR_PATH = os.getenv("GAMES_RAW_DIR_PATH", "data/games_raw")
-TIMEZONE = os.getenv("CELERY_TIMEZONE", "UTC")
 
-SERVICE_ID = os.getenv("SERVICE_ID")
-SERVICE_SECRET = os.getenv("SERVICE_SECRET")
-AUTH_URL = os.getenv("AUTH_URL", "http://auth-service/service/token")
+BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
+BACKEND_URL = os.getenv("CELERY_BACKEND_URL", "redis://redis:6379/1")
+TIMEZONE = os.getenv("CELERY_TIMEZONE", "UTC")
+GAMES_RAW_DIR_PATH = os.getenv("GAMES_RAW_DIR_PATH", "/app/data/games_raw")
+
+
+BASE_DIR: Path = Path(os.getenv("DATA_DIR", "/app/data"))
+MAP_DIR: Path = BASE_DIR / "maps"
+TEAM_DIR: Path = BASE_DIR / "teams"
+PLAYER_DIR: Path = BASE_DIR / "players"
+GAME_FLATTEN_DIR: Path = BASE_DIR / "games_flatten"
+
+for d in [MAP_DIR, TEAM_DIR, PLAYER_DIR, GAME_FLATTEN_DIR]:
+    d.mkdir(parents=True, exist_ok=True)
+
 
 logger = logging.getLogger("etl_worker")
 logger.setLevel(logging.INFO)
@@ -37,6 +40,7 @@ handler = logging.StreamHandler()
 formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 handler.setFormatter(formatter)
 logger.addHandler(handler)
+
 
 app = Celery("etl_worker", broker=BROKER_URL, backend=BACKEND_URL)
 app.conf.update(
@@ -48,39 +52,39 @@ app.conf.update(
 )
 
 
-@app.task
-def etl_pipeline():
-    logger.info(f"Запуск ETL для директории: {GAMES_RAW_DIR_PATH}")
-    with httpx.Client() as client:
-        token = get_service_token(client, SERVICE_ID, SERVICE_SECRET, AUTH_URL)
-        if not token:
-            logger.error("Токен сервиса отсутствует, ETL прерван")
-            return "ETL прерван: отсутствует токен сервиса"
+@app.task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=5)
+def etl_pipeline(self):
+    logger.info(f"Запуск ETL для: {GAMES_RAW_DIR_PATH}")
 
-        headers = {"Authorization": f"Bearer {token}"}
+    processed = 0
+    for game in generate_game_raw(GAMES_RAW_DIR_PATH):
+        if not validate_game(game):
+            logger.warning(f"⏭ Пропущена игра id={game.get('id')}")
+            continue
 
-        for game in generate_game_raw(GAMES_RAW_DIR_PATH):
-            if not validate_game(game):
-                logger.warning(f"Пропущена недопустимая игра id={game.get('id')}")
-                continue
+        processed += 1
+        try:
+            load_map(transform_map(game), MAP_DIR)
+            load_teams(transform_team(game) or [], TEAM_DIR)
+            load_players(transform_player(game) or [], PLAYER_DIR)
+            load_game_flatten(transform_game_flatten(game), GAME_FLATTEN_DIR)
+            logger.info(f"Игра {game.get('id')}: загружена")
+        except Exception as e:
+            logger.error(f"Ошибка обработки игры {game.get('id')}: {e}")
+            continue
 
-            map_data = transform_map(game)
-            teams_data = transform_team(game) or []
-            players_data = transform_player(game) or []
-            game_flatten_rows = transform_game_flatten(game)
+    logger.info(f"✅ ETL завершен | обработано игр: {processed}")
+    return f"Готово: {processed} игр"
 
-            load_map(map_data, client, MAP_URL, headers=headers)
-            load_teams(teams_data, client, TEAM_URL, headers=headers)
-            load_players(players_data, client, PLAYER_URL, headers=headers)
-            load_game_flatten(
-                game_flatten_rows, client, GAME_FLATTEN_URL, headers=headers
-            )
 
-    logger.info(f"ETL завершен для директории: {GAMES_RAW_DIR_PATH}")
-    return f"ETL завершен для директории: {GAMES_RAW_DIR_PATH}"
+_etl_started = False
 
 
 @signals.worker_ready.connect
 def at_start(sender=None, **kwargs):
-    logger.info("Рабочий процесс готов. Запуск ETL...")
-    etl_pipeline.delay()
+    """Запускаем ETL при старте воркера Celery один раз."""
+    global _etl_started
+    if not _etl_started:
+        logger.info("Worker готов ✅ Запуск ETL...")
+        etl_pipeline.delay()
+        _etl_started = True

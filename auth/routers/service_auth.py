@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from auth.services.auth import (
+from auth.services.service_auth import (
     InvalidServiceSecretError,
     ServiceAlreadyExistsError,
     ServiceAuthService,

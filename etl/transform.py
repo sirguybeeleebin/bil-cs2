@@ -82,7 +82,7 @@ def validate_game(game: dict) -> bool:
 def transform_game_flatten(game: dict) -> list[dict]:
     data = {}
     data["game_id"] = int(game["id"])
-    data["begin_at"] = parse(game["begin_at"])
+    data["begin_at"] = parse(game["begin_at"]).isoformat()
     data["map_id"] = int(game["map"]["id"])
 
     team_players = defaultdict(list)
@@ -128,6 +128,6 @@ def transform_game_flatten(game: dict) -> list[dict]:
                         4: "timeout",
                     }.get(r.get("outcome"), 0)
                     row["round_win"] = int(r["winner_team"] == t_id)
-                    row.update(player_stats)
+                    row.update(player_stats[p_id])
                     rows.append(row)
     return rows

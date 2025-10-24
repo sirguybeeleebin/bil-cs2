@@ -8,8 +8,10 @@ from fastapi import APIRouter, FastAPI
 from auth.middlewares.logging import LoggingMiddleware
 from auth.repositories.service import make_service_repository
 from auth.repositories.user import make_user_repository
-from auth.routers.auth import make_auth_router, make_service_auth_router
-from auth.services.auth import make_auth_service, make_service_auth_service
+from auth.routers.auth import make_auth_router
+from auth.routers.service_auth import make_service_auth_router
+from auth.services.auth import make_auth_service
+from auth.services.service_auth import make_service_auth_service
 
 load_dotenv()
 
@@ -65,6 +67,8 @@ async def lifespan(app: FastAPI):
     router = APIRouter(prefix=VERSION)
     router.include_router(auth_router)
     router.include_router(service_router)
+
+    app.include_router(router)
 
     try:
         yield

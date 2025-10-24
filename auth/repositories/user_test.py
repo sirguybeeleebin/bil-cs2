@@ -109,6 +109,7 @@ async def test_get_user_by_id():
 
     # Fetch nonexistent ID
     from uuid import uuid4
+
     non_user = await user_repo.get_user_by_id(uuid4())
     assert non_user is None
     logger.info("Nonexistent user correctly returned None")

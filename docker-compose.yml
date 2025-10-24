@@ -18,7 +18,22 @@ services:
         condition: service_healthy
     ports:
       - "${AUTH_APP_PORT}:8000"
-    
+
+  etl:
+    container_name: etl_worker
+    build:
+      context: .
+      dockerfile: ./etl/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:      
+      - ./data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      auth:
+        condition: service_started
 
   postgres:
     image: postgres:15
@@ -27,8 +42,8 @@ services:
     env_file:
       - .env
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}        
-      POSTGRES_USER: ${POSTGRES_USER}    
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -57,11 +72,28 @@ services:
     volumes:
       - mongo_data:/data/db
     healthcheck:
-      test: ["CMD-SHELL", "mongosh --quiet --username ${MONGO_INITDB_ROOT_USERNAME} --password ${MONGO_INITDB_ROOT_PASSWORD} --authenticationDatabase admin --eval 'db.adminCommand({ ping: 1 })' || exit 1"]
+      test: [
+        "CMD-SHELL",
+        "mongosh --quiet --username ${MONGO_INITDB_ROOT_USERNAME} --password ${MONGO_INITDB_ROOT_PASSWORD} --authenticationDatabase admin --eval 'db.adminCommand({ ping: 1 })' || exit 1"
+      ]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${REDIS_PORT}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   fluentd:
     image: fluent/fluentd:v1.16-debian-1
