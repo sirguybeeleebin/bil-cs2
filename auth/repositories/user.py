@@ -5,26 +5,27 @@ class UserRepository:
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
 
-    async def upsert_user(self, username: str, password: str) -> dict | None:
+    async def upsert_user(self, username: str, password_hash: str) -> dict | None:
         query = """
-        INSERT INTO users (username, password, created_at, updated_at)
+        INSERT INTO auth.users (username, password_hash, created_at, updated_at)
         VALUES ($1, $2, NOW(), NOW())
         ON CONFLICT (username) DO UPDATE
-        SET password = EXCLUDED.password,
+        SET password_hash = EXCLUDED.password_hash,
             updated_at = NOW()
-        RETURNING id, username, created_at, updated_at
+        RETURNING user_id, username, created_at, updated_at
         """
         try:
             async with self.pool.acquire() as conn:
-                row = await conn.fetchrow(query, username, password)
+                row = await conn.fetchrow(query, username, password_hash)
             return dict(row)
         except asyncpg.PostgresError:
             return None
 
     async def get_user_by_username(self, username: str) -> dict | None:
         query = """
-        SELECT id, username, password, created_at, updated_at 
-        FROM users WHERE username = $1
+        SELECT user_id, username, password_hash, created_at, updated_at
+        FROM auth.users
+        WHERE username = $1
         """
         try:
             async with self.pool.acquire() as conn:

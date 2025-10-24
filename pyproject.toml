@@ -11,13 +11,13 @@ asyncpg = "^0.27.0"
 python-dotenv = "^1.0.0"
 pyjwt = "^2.8.0"
 bcrypt = "^4.1.0"
-testcontainers = "^4.13.2"
-pytest-asyncio = "^1.2.0"
 
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.14.0"
 isort = "^6.1.0"
 autoflake = "^2.1.1"
+testcontainers = "^4.13.2"
+pytest-asyncio = "^1.2.0"
 
 [build-system]
 requires = ["poetry-core>=1.6.0"]

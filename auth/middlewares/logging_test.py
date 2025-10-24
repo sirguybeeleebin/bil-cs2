@@ -5,8 +5,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
-
-from auth.middlewares.logging import JsonLoggingMiddleware
+from middlewares.logging import LoggingMiddleware
 
 
 class LogCaptureHandler(logging.Handler):
@@ -21,7 +20,7 @@ class LogCaptureHandler(logging.Handler):
 @pytest.fixture
 def app():
     app = FastAPI()
-    app.add_middleware(JsonLoggingMiddleware)
+    app.add_middleware(LoggingMiddleware)
 
     @app.get("/test")
     async def test_endpoint():

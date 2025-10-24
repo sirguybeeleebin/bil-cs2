@@ -4,8 +4,15 @@ from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel, Field, validator
-
-from auth.services.auth import AuthService
+from services.auth import (
+    AuthService,
+    InvalidServiceSecretError,
+    InvalidUserPasswordError,
+    ServiceAlreadyExistsError,
+    ServiceNotFoundError,
+    UserAlreadyExistsError,
+    UserNotFoundError,
+)
 
 
 class UserRegisterRequest(BaseModel):
@@ -161,46 +168,49 @@ def make_auth_router(auth_service: AuthService) -> APIRouter:
 
     @router.post("/register", response_model=UserRegisterResponse)
     async def register(data: UserRegisterRequest):
-        user = await auth_service.register_user(data.username, data.password)
-        if not user:
+        try:
+            return await auth_service.register_user(data.username, data.password)
+        except UserAlreadyExistsError:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Пользователь уже существует",
             )
-        return user
 
     @router.post("/login", response_model=UserLoginResponse)
     async def login(data: UserLoginRequest):
-        token = await auth_service.authenticate_user(data.username, data.password)
-        if not token:
+        try:
+            token = await auth_service.authenticate_user(data.username, data.password)
+            return {"access_token": token, "token_type": "bearer"}
+        except (UserNotFoundError, InvalidUserPasswordError):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Неверные учетные данные",
             )
-        return {"access_token": token}
 
     @router.post("/service/register", response_model=ServiceRegisterResponse)
     async def register_service(data: ServiceRegisterRequest):
-        service = await auth_service.register_service(
-            data.client_id, data.client_secret
-        )
-        if not service:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="Сервис уже существует"
+        try:
+            return await auth_service.register_service(
+                data.client_id, data.client_secret
             )
-        return service
+        except ServiceAlreadyExistsError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Сервис уже существует",
+            )
 
     @router.post("/service/token", response_model=ServiceLoginResponse)
     async def service_token(data: ServiceLoginRequest):
-        token = await auth_service.authenticate_service(
-            data.client_id, data.client_secret
-        )
-        if not token:
+        try:
+            token = await auth_service.authenticate_service(
+                data.client_id, data.client_secret
+            )
+            return {"access_token": token, "token_type": "bearer"}
+        except (ServiceNotFoundError, InvalidServiceSecretError):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Неверные учетные данные",
             )
-        return {"access_token": token}
 
     @router.get("/me", response_model=UserRegisterResponse)
     async def get_me(
@@ -208,9 +218,9 @@ def make_auth_router(auth_service: AuthService) -> APIRouter:
             ..., title="ID пользователя", description="ID текущего пользователя"
         ),
     ):
-        user = await auth_service.get_me(user_id)
-        if not user:
+        try:
+            return await auth_service.get_me(user_id)
+        except UserNotFoundError:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-        return user
 
     return router

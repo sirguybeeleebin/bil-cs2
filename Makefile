@@ -13,3 +13,10 @@ lint:
 test:
 	poetry run pytest -v --disable-warnings -p no:cacheprovider --log-cli-level=INFO
 
+prune:
+	docker compose stop
+	docker container prune -f
+	docker volume prune -f
+	docker volume rm bil-cs2_mongo_data
+	docker volume rm bil-cs2_postgres_data
+

@@ -1,0 +1,11 @@
+CREATE SCHEMA IF NOT EXISTS auth;
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+CREATE TABLE IF NOT EXISTS auth.services (
+    service_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    client_id VARCHAR(100) UNIQUE NOT NULL,
+    client_secret_hash VARCHAR(255) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

@@ -14,7 +14,7 @@ logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
 
-class JsonLoggingMiddleware(BaseHTTPMiddleware):
+class LoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable):
         request_id = str(uuid.uuid4())
         request.state.request_id = request_id

@@ -2,11 +2,8 @@ import logging
 
 import asyncpg
 import pytest
+from repositories.service import make_service_repository
 from testcontainers.postgres import PostgresContainer
-
-from auth.repositories.service import (
-    make_service_repository,
-)  # путь к ServiceRepository
 
 logger = logging.getLogger("test_logger")
 logger.setLevel(logging.INFO)
@@ -24,10 +21,11 @@ async def setup_database():
     pool = await asyncpg.create_pool(dsn=dsn)
     async with pool.acquire() as conn:
         await conn.execute("""
-        CREATE TABLE IF NOT EXISTS services (
-            id SERIAL PRIMARY KEY,
+        CREATE SCHEMA IF NOT EXISTS auth;
+        CREATE TABLE IF NOT EXISTS auth.services (
+            service_id SERIAL PRIMARY KEY,
             client_id TEXT UNIQUE NOT NULL,
-            client_secret TEXT NOT NULL,
+            client_secret_hash TEXT NOT NULL,
             created_at TIMESTAMP NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMP NOT NULL DEFAULT NOW()
         );
@@ -69,11 +67,11 @@ async def test_update_service_secret():
     postgres, pool, service_repo = await setup_database()
     service = await service_repo.upsert_service("client1", "secret123")
     updated_service = await service_repo.upsert_service("client1", "newsecret456")
-    assert updated_service["id"] == service["id"]
+    assert updated_service["service_id"] == service["service_id"]
     logger.info("Service updated: %s", updated_service)
     fetched_service = await service_repo.get_service_by_client_id("client1")
-    assert fetched_service["client_secret"] == "newsecret456"
-    logger.info("Secret verified: %s", fetched_service["client_secret"])
+    assert fetched_service["client_secret_hash"] == "newsecret456"
+    logger.info("Secret verified: %s", fetched_service["client_secret_hash"])
     await pool.close()
     postgres.stop()
     logger.info("Test finished: test_update_service_secret")
