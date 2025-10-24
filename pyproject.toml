@@ -12,6 +12,7 @@ python-dotenv = "^1.0.0"
 pyjwt = "^2.8.0"
 bcrypt = "^4.1.0"
 dateutils = "^0.6.12"
+pydantic = "^2.12.3"
 
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.14.0"
