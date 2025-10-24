@@ -88,3 +88,31 @@ async def test_get_nonexistent_user():
     await pool.close()
     postgres.stop()
     logger.info("Test finished: test_get_nonexistent_user")
+
+
+@pytest.mark.asyncio
+async def test_get_user_by_id():
+    logger.info("Starting test_get_user_by_id")
+    postgres, pool, user_repo = await setup_database()
+
+    # Insert a user first
+    user = await user_repo.upsert_user("testuser", "password123")
+    user_id = user["user_id"]
+    logger.info("User inserted: %s", user)
+
+    # Fetch by ID
+    fetched_user = await user_repo.get_user_by_id(user_id)
+    assert fetched_user is not None
+    assert fetched_user["user_id"] == user_id
+    assert fetched_user["username"] == "testuser"
+    logger.info("User fetched by ID: %s", fetched_user)
+
+    # Fetch nonexistent ID
+    from uuid import uuid4
+    non_user = await user_repo.get_user_by_id(uuid4())
+    assert non_user is None
+    logger.info("Nonexistent user correctly returned None")
+
+    await pool.close()
+    postgres.stop()
+    logger.info("Test finished: test_get_user_by_id")
