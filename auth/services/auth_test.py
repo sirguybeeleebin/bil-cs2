@@ -1,108 +1,132 @@
-from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import bcrypt
-import jwt
 import pytest
+from services.auth import (
+    AuthService,
+    InvalidServiceSecretError,
+    InvalidUserPasswordError,
+    ServiceAlreadyExistsError,
+    UserAlreadyExistsError,
+)
 
-from auth.services.auth import AuthService
-
-
-# -----------------------------
-# Fixtures
-# -----------------------------
-@pytest.fixture
-def mock_user_repo():
-    repo = AsyncMock()
-    return repo
-
-
-@pytest.fixture
-def auth_service(mock_user_repo):
-    return AuthService(
-        user_repo=mock_user_repo,
-        jwt_secret="testsecret",
-        jwt_algorithm="HS256",
-        access_token_expire_minutes=60,
-    )
-
-
-# -----------------------------
-# Tests
-# -----------------------------
-@pytest.mark.asyncio
-async def test_register_success(auth_service, mock_user_repo):
-    # No existing user
-    mock_user_repo.get_by_username.return_value = None
-    mock_user_repo.upsert.return_value = {"user_id": 1, "username": "alice"}
-
-    with (
-        patch("bcrypt.hashpw", return_value=b"hashed_pw") as mock_hash,
-        patch("jwt.encode", return_value="token123") as mock_jwt,
-    ):
-        token = await auth_service.register("alice", "password")
-
-    mock_user_repo.get_by_username.assert_awaited_once_with("alice")
-    mock_user_repo.upsert.assert_awaited_once()
-    mock_hash.assert_called_once()
-    mock_jwt.assert_called_once()
-    assert token == "token123"
+JWT_SECRET = "secret"
+JWT_ALGO = "HS256"
+TOKEN_EXPIRE = 60
 
 
 @pytest.mark.asyncio
-async def test_register_existing_user_raises(auth_service, mock_user_repo):
-    mock_user_repo.get_by_username.return_value = {"user_id": 1, "username": "alice"}
+async def test_register_user_success():
+    user_repo = AsyncMock()
+    service_repo = AsyncMock()
+    user_repo.get_user_by_username.return_value = None
+    user_repo.upsert_user.return_value = {"user_id": uuid4(), "username": "alice"}
 
-    with pytest.raises(ValueError, match="Username already exists"):
-        await auth_service.register("alice", "password")
+    service = AuthService(user_repo, service_repo, JWT_SECRET, JWT_ALGO, TOKEN_EXPIRE)
+    user = await service.register_user("alice", "Password123")
+
+    assert user is not None
+    assert user["username"] == "alice"
+    user_repo.get_user_by_username.assert_awaited_once_with("alice")
+    user_repo.upsert_user.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_login_success(auth_service, mock_user_repo):
-    hashed_pw = bcrypt.hashpw("password".encode(), bcrypt.gensalt())
-    mock_user_repo.get_by_username.return_value = {
-        "user_id": 1,
+async def test_register_user_existing():
+    user_repo = AsyncMock()
+    service_repo = AsyncMock()
+    user_repo.get_user_by_username.return_value = {
+        "user_id": uuid4(),
         "username": "alice",
-        "password_hash": hashed_pw.decode(),
     }
 
-    with patch("jwt.encode", return_value="token123") as mock_jwt:
-        token = await auth_service.login("alice", "password")
+    service = AuthService(user_repo, service_repo, JWT_SECRET, JWT_ALGO, TOKEN_EXPIRE)
 
-    mock_user_repo.get_by_username.assert_awaited_once_with("alice")
-    mock_jwt.assert_called_once()
-    assert token == "token123"
+    with pytest.raises(UserAlreadyExistsError):
+        await service.register_user("alice", "Password123")
 
 
 @pytest.mark.asyncio
-async def test_login_wrong_password_returns_none(auth_service, mock_user_repo):
-    hashed_pw = bcrypt.hashpw("password".encode(), bcrypt.gensalt())
-    mock_user_repo.get_by_username.return_value = {
-        "user_id": 1,
-        "username": "alice",
-        "password_hash": hashed_pw.decode(),
+async def test_authenticate_user_wrong_password():
+    password = "Password123"
+    hashed_pw = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    user_repo = AsyncMock()
+    service_repo = AsyncMock()
+    user_repo.get_user_by_username.return_value = {
+        "user_id": uuid4(),
+        "password_hash": hashed_pw,
     }
 
-    token = await auth_service.login("alice", "wrongpassword")
-    assert token is None
+    service = AuthService(user_repo, service_repo, JWT_SECRET, JWT_ALGO, TOKEN_EXPIRE)
+
+    with pytest.raises(InvalidUserPasswordError):
+        await service.authenticate_user("alice", "WrongPass")
 
 
 @pytest.mark.asyncio
-async def test_login_nonexistent_user_returns_none(auth_service, mock_user_repo):
-    mock_user_repo.get_by_username.return_value = None
+async def test_authenticate_user_success():
+    password = "Password123"
+    hashed_pw = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    user_repo = AsyncMock()
+    service_repo = AsyncMock()
+    user_repo.get_user_by_username.return_value = {
+        "user_id": uuid4(),
+        "password_hash": hashed_pw,
+    }
 
-    token = await auth_service.login("bob", "password")
-    assert token is None
+    service = AuthService(user_repo, service_repo, JWT_SECRET, JWT_ALGO, TOKEN_EXPIRE)
+    token = await service.authenticate_user("alice", password)
+
+    assert token is not None
+    user_repo.get_user_by_username.assert_awaited_once_with("alice")
 
 
-def test_create_access_token_contains_user_id(auth_service):
-    token = auth_service._create_access_token(42)
-    payload = jwt.decode(
-        token, auth_service.jwt_secret, algorithms=[auth_service.jwt_algorithm]
-    )
-    assert payload["user_id"] == 42
-    assert "exp" in payload
-    # Ensure expiration is roughly correct
-    exp = datetime.utcfromtimestamp(payload["exp"])
-    now = datetime.utcnow()
-    assert timedelta(minutes=59) < (exp - now) < timedelta(minutes=61)
+@pytest.mark.asyncio
+async def test_register_service_success():
+    user_repo = AsyncMock()
+    service_repo = AsyncMock()
+    service_repo.get_service_by_client_id.return_value = None
+    service_repo.upsert_service.return_value = {
+        "service_id": uuid4(),
+        "client_id": "service1",
+    }
+
+    service = AuthService(user_repo, service_repo, JWT_SECRET, JWT_ALGO, TOKEN_EXPIRE)
+    svc = await service.register_service("service1", "Secret123")
+
+    assert svc is not None
+    assert svc["client_id"] == "service1"
+    service_repo.get_service_by_client_id.assert_awaited_once_with("service1")
+    service_repo.upsert_service.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_register_service_existing():
+    user_repo = AsyncMock()
+    service_repo = AsyncMock()
+    service_repo.get_service_by_client_id.return_value = {
+        "service_id": uuid4(),
+        "client_id": "service1",
+    }
+
+    service = AuthService(user_repo, service_repo, JWT_SECRET, JWT_ALGO, TOKEN_EXPIRE)
+
+    with pytest.raises(ServiceAlreadyExistsError):
+        await service.register_service("service1", "Secret123")
+
+
+@pytest.mark.asyncio
+async def test_authenticate_service_wrong_secret():
+    hashed_secret = bcrypt.hashpw("Secret123".encode(), bcrypt.gensalt()).decode()
+    user_repo = AsyncMock()
+    service_repo = AsyncMock()
+    service_repo.get_service_by_client_id.return_value = {
+        "service_id": uuid4(),
+        "client_secret_hash": hashed_secret,
+    }
+
+    service = AuthService(user_repo, service_repo, JWT_SECRET, JWT_ALGO, TOKEN_EXPIRE)
+
+    with pytest.raises(InvalidServiceSecretError):
+        await service.authenticate_service("service1", "WrongSecret")
