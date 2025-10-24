@@ -1,3 +1,5 @@
+from uuid import UUID
+
 import asyncpg
 
 
@@ -30,6 +32,19 @@ class UserRepository:
         try:
             async with self.pool.acquire() as conn:
                 row = await conn.fetchrow(query, username)
+            return dict(row) if row else None
+        except asyncpg.PostgresError:
+            return None
+
+    async def get_user_by_id(self, user_id: UUID) -> dict | None:
+        query = """
+        SELECT user_id, username, password_hash, created_at, updated_at
+        FROM auth.users
+        WHERE user_id = $1
+        """
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(query, user_id)
             return dict(row) if row else None
         except asyncpg.PostgresError:
             return None

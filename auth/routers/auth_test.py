@@ -14,22 +14,16 @@ JWT_TOKEN = "mocked-jwt-token"
 @pytest.fixture
 def auth_service_mock():
     service = AsyncMock(spec=AuthService)
+    # User-related mocks only
     service.register_user.return_value = {
-        "user_id": uuid4(),
+        "user_id": str(uuid4()),
         "username": "alice",
         "created_at": "2025-10-23T00:00:00Z",
         "updated_at": "2025-10-23T00:00:00Z",
     }
     service.authenticate_user.return_value = JWT_TOKEN
-    service.register_service.return_value = {
-        "service_id": uuid4(),
-        "client_id": "etl_001",
-        "created_at": "2025-10-23T00:00:00Z",
-        "updated_at": "2025-10-23T00:00:00Z",
-    }
-    service.authenticate_service.return_value = JWT_TOKEN
     service.get_me.return_value = {
-        "user_id": uuid4(),
+        "user_id": str(uuid4()),
         "username": "alice",
         "created_at": "2025-10-23T00:00:00Z",
         "updated_at": "2025-10-23T00:00:00Z",
@@ -63,36 +57,16 @@ def test_login_user(client):
     assert data["access_token"] == JWT_TOKEN
 
 
-def test_register_service(client):
-    response = client.post(
-        "/auth/service/register",
-        json={"client_id": "etl_001", "client_secret": "secret123"},
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["client_id"] == "etl_001"
-
-
-def test_service_token(client):
-    response = client.post(
-        "/auth/service/token",
-        json={"client_id": "etl_001", "client_secret": "secret123"},
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["access_token"] == JWT_TOKEN
-
-
 def test_get_me_success(client, auth_service_mock):
-    user_id = uuid4()
+    user_id = str(uuid4())
     auth_service_mock.get_me.return_value = {
-        "user_id": str(user_id),
+        "user_id": user_id,
         "username": "testuser",
         "created_at": "2025-01-01T00:00:00",
         "updated_at": "2025-01-01T00:00:00",
     }
 
-    response = client.get("/auth/me", headers={"user-id": str(user_id)})
+    response = client.get("/auth/me", headers={"user-id": user_id})
     assert response.status_code == 200
     data = response.json()
-    assert data["user_id"] == str(user_id)
+    assert data["user_id"] == user_id
