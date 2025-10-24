@@ -5,6 +5,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
+
 from auth.middlewares.logging import LoggingMiddleware
 
 

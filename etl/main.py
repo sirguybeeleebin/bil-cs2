@@ -7,8 +7,14 @@ from dotenv import load_dotenv
 
 from etl.extract import generate_game_raw
 from etl.get_service_token import get_service_token
-from etl.load import load_map, load_players, load_teams
-from etl.transform import transform_map, transform_player, transform_team
+from etl.load import load_game_flatten, load_map, load_players, load_teams
+from etl.transform import (
+    transform_game_flatten,
+    transform_map,
+    transform_player,
+    transform_team,
+    validate_game,
+)
 
 load_dotenv()
 
@@ -17,6 +23,7 @@ BACKEND_URL = os.getenv("CELERY_BACKEND_URL", "redis://localhost:6379/1")
 MAP_URL = os.getenv("MAP_URL", "http://example.com/maps")
 TEAM_URL = os.getenv("TEAM_URL", "http://example.com/teams")
 PLAYER_URL = os.getenv("PLAYER_URL", "http://example.com/players")
+GAME_FLATTEN_URL = os.getenv("GAME_FLATTEN_URL", "http://example.com/games_flatten")
 GAMES_RAW_DIR_PATH = os.getenv("GAMES_RAW_DIR_PATH", "data/games_raw")
 TIMEZONE = os.getenv("CELERY_TIMEZONE", "UTC")
 
@@ -32,7 +39,6 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 app = Celery("etl_worker", broker=BROKER_URL, backend=BACKEND_URL)
-
 app.conf.update(
     task_serializer="json",
     result_serializer="json",
@@ -54,13 +60,21 @@ def etl_pipeline():
         headers = {"Authorization": f"Bearer {token}"}
 
         for game in generate_game_raw(GAMES_RAW_DIR_PATH):
+            if not validate_game(game):
+                logger.warning(f"Пропущена недопустимая игра id={game.get('id')}")
+                continue
+
             map_data = transform_map(game)
             teams_data = transform_team(game) or []
             players_data = transform_player(game) or []
+            game_flatten_rows = transform_game_flatten(game)
 
             load_map(map_data, client, MAP_URL, headers=headers)
             load_teams(teams_data, client, TEAM_URL, headers=headers)
             load_players(players_data, client, PLAYER_URL, headers=headers)
+            load_game_flatten(
+                game_flatten_rows, client, GAME_FLATTEN_URL, headers=headers
+            )
 
     logger.info(f"ETL завершен для директории: {GAMES_RAW_DIR_PATH}")
     return f"ETL завершен для директории: {GAMES_RAW_DIR_PATH}"

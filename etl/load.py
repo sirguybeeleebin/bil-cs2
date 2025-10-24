@@ -41,3 +41,20 @@ def load_players(
             client.post(url, json=player, headers=headers).raise_for_status()
         except httpx.HTTPError as e:
             log.error(f"Не удалось загрузить игрока {player.get('player_id')}: {e}")
+
+
+def load_game_flatten(
+    game_rows: list[dict],
+    client: httpx.Client,
+    url: str,
+    headers: dict | None = None,
+) -> None:
+    if not game_rows:
+        return
+    for row in game_rows:
+        try:
+            client.post(url, json=row, headers=headers).raise_for_status()
+        except httpx.HTTPError as e:
+            log.error(
+                f"Не удалось загрузить строку игры (game_id={row.get('game_id')}, player_id={row.get('player_id')}, round_id={row.get('round_id')}): {e}"
+            )
