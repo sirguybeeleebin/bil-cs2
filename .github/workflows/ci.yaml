@@ -36,9 +36,6 @@ jobs:
       - name: Run lint
         run: make lint
 
-      - name: Run tests
-        env:
-          PYTHONPATH: ${{ github.workspace }}/auth
-        run: |
-          echo "PYTHONPATH = $PYTHONPATH"
+      - name: Run tests        
+        run: |          
           make test

@@ -3,8 +3,9 @@ from uuid import UUID
 
 import bcrypt
 import jwt
-from repositories.service import ServiceRepository
-from repositories.user import UserRepository
+
+from auth.repositories.service import ServiceRepository
+from auth.repositories.user import UserRepository
 
 
 class UserAlreadyExistsError(Exception):

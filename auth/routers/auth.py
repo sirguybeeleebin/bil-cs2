@@ -4,7 +4,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel, Field, validator
-from services.auth import (
+
+from auth.services.auth import (
     AuthService,
     InvalidServiceSecretError,
     InvalidUserPasswordError,

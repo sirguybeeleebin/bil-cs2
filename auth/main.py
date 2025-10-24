@@ -4,11 +4,12 @@ import asyncpg
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from middlewares.logging import LoggingMiddleware
-from repositories.service import make_service_repository
-from repositories.user import make_user_repository
-from routers.auth import make_auth_router
-from services.auth import make_auth_service
+
+from auth.middlewares.logging import LoggingMiddleware
+from auth.repositories.service import make_service_repository
+from auth.repositories.user import make_user_repository
+from auth.routers.auth import make_auth_router
+from auth.services.auth import make_auth_service
 
 load_dotenv()
 

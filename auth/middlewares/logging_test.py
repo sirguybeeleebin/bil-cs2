@@ -5,7 +5,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
-from middlewares.logging import LoggingMiddleware
+
+from auth.middlewares.logging import LoggingMiddleware
 
 
 class LogCaptureHandler(logging.Handler):
