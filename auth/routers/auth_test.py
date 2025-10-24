@@ -4,8 +4,9 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from routers.auth import make_auth_router
-from services.auth import AuthService
+
+from auth.routers.auth import make_auth_router
+from auth.services.auth import AuthService
 
 JWT_TOKEN = "mocked-jwt-token"
 

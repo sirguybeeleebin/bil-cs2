@@ -13,9 +13,9 @@ COPY pyproject.toml /app/
 
 RUN poetry install --no-root --only main
 
-COPY auth /app/auth
+COPY etl /app/etl
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-CMD ["poetry", "run", "uvicorn", "auth.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["poetry", "run", "celery", "-A", "etl.main", "worker", "--loglevel=info"]

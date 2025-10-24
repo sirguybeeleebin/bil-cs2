@@ -3,7 +3,8 @@ from uuid import uuid4
 
 import bcrypt
 import pytest
-from services.auth import (
+
+from auth.services.auth import (
     AuthService,
     InvalidServiceSecretError,
     InvalidUserPasswordError,

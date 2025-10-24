@@ -2,8 +2,9 @@ import logging
 
 import asyncpg
 import pytest
-from repositories.service import make_service_repository
 from testcontainers.postgres import PostgresContainer
+
+from auth.repositories.service import make_service_repository
 
 logger = logging.getLogger("test_logger")
 logger.setLevel(logging.INFO)
