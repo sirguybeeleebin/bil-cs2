@@ -4,26 +4,30 @@ version = "0.1.0"
 package-mode = false
 
 [tool.poetry.dependencies]
-python = "^3.11"
-fastapi = "^0.111.1"
-uvicorn = { version = "^0.27.0", extras = ["standard"] }
-asyncpg = "^0.27.0"
-python-dotenv = "^1.0.0"
-pyjwt = "^2.8.0"
-bcrypt = "^4.1.0"
-dateutils = "^0.6.12"
-pydantic = "^2.12.3"
-celery = "^5.5.3"
-redis = "^7.0.0"
+python = ">=3.11,<3.14"
+fastapi = "*"
+uvicorn = { version = "*", extras = ["standard"] }
+asyncpg = "*"
+python-dotenv = "*"
+pyjwt = "*"
+bcrypt = "*"
+dateutils = "*"
+pydantic = "*"
+celery = "*"
+redis = "*"
+joblib = "*"
+scikit-learn = "*"
+apache-airflow="*"
+mlflow = "^3.5.1"
 
 [tool.poetry.group.dev.dependencies]
-ruff = "^0.14.0"
-isort = "^6.1.0"
-autoflake = "^2.1.1"
-testcontainers = "^4.13.2"
-pytest-asyncio = "^1.2.0"
-respx = "^0.22.0"
-pytest-cov = "^7.0.0"
+ruff = "*"
+isort = "*"
+autoflake = "*"
+testcontainers = "*"
+pytest-asyncio = "*"
+respx = "*"
+pytest-cov = "*"
 
 [build-system]
 requires = ["poetry-core>=1.6.0"]

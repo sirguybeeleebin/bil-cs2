@@ -1,0 +1,39 @@
+@startuml
+!define RECTANGLE class
+
+RECTANGLE "Data Source\n(data/games_raw)" as DataSource
+
+RECTANGLE "generate_game_raw()" as RawGenerator
+RECTANGLE "_validate_game()" as Validator
+RECTANGLE "get_game_ids()" as GameIDExtractor
+RECTANGLE "get_X_y()" as XYExtractor
+
+RECTANGLE "ColumnSelectorArray" as ColumnSelector
+RECTANGLE "BagEncoder" as Bag
+RECTANGLE "PlayerEloEncoder" as Elo
+RECTANGLE "PlayerStatisticSumExtractor" as Stats
+
+RECTANGLE "Pipeline" as Pipeline
+RECTANGLE "OOFPredictor" as OOF
+RECTANGLE "MLStacker" as Stacker
+RECTANGLE "LogisticRegression\n(final model)" as FinalModel
+
+DataSource --> RawGenerator : read JSON files
+RawGenerator --> Validator : validate games
+Validator --> GameIDExtractor : filter valid IDs
+GameIDExtractor --> XYExtractor : train/test IDs
+XYExtractor --> Pipeline : X, y
+
+ColumnSelector --> Pipeline
+Bag --> Pipeline
+Elo --> Pipeline
+Stats --> Pipeline
+
+Pipeline --> OOF : fit_transform(X_train)
+OOF --> Stacker : OOF predictions
+Stacker --> FinalModel : train on meta-features
+
+Stacker --> OOF : predict_proba(X_test)
+Stacker --> FinalModel : predict_proba on meta-features
+
+@enduml
