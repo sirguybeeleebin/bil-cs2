@@ -5,28 +5,30 @@ package-mode = false
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.14"
-fastapi = "*"
-uvicorn = { version = "*", extras = ["standard"] }
-asyncpg = "*"
-python-dotenv = "*"
-pyjwt = "*"
-bcrypt = "*"
-dateutils = "*"
-pydantic = "*"
+
+# Django + REST
+django = "*"
+djangorestframework = "*"
+djangorestframework-simplejwt = "*"
+drf-spectacular = "*"
+
+# Celery + Redis
 celery = "*"
 redis = "*"
-joblib = "*"
+
+# ML
 scikit-learn = "*"
-apache-airflow="*"
-mlflow = "^3.5.1"
+joblib = "*"
+
+# Telegram Bot
+python-telegram-bot = "*"
 
 [tool.poetry.group.dev.dependencies]
 ruff = "*"
 isort = "*"
 autoflake = "*"
-testcontainers = "*"
-pytest-asyncio = "*"
-respx = "*"
+pytest = "*"
+pytest-django = "*"
 pytest-cov = "*"
 
 [build-system]
