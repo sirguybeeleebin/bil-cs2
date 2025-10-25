@@ -5,15 +5,15 @@ from dotenv import load_dotenv
 import redis
 from celery import Celery
 from celery.schedules import crontab
-import httpx
 
 from ml.ml_pipeline import run_ml_pipeline
 from tasks_factory import make_train_and_publish_task
-from tasks_update import make_update_dictionaries_task  # ваша фабрика задачи
+from tasks_update import make_update_dictionaries_task  # updated factory
 
 load_dotenv()
 
 ML_RESULTS_PATH = os.getenv("ML_RESULTS_PATH", "data/ml_results")
+RAW_DATA_DIR = Path(os.getenv("RAW_DATA_DIR", "data/games_raw"))  # directory with JSON files
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_CHANNEL = os.getenv("REDIS_CHANNEL", "ml_updates")
@@ -43,11 +43,12 @@ train_and_publish_task = make_train_and_publish_task(
     run_ml_pipeline_func=run_ml_pipeline,
 )
 
-# Async HTTP client for update dictionaries task
-async_client = httpx.AsyncClient(timeout=10.0)
+# Update dictionaries task (reads JSON files and publishes to Redis)
 update_dictionaries_task = make_update_dictionaries_task(
     celery_app=celery_app,
-    http_client=async_client,
+    redis_client=redis_client,
+    redis_channel=REDIS_CHANNEL,
+    path_game_raw_data_dir=RAW_DATA_DIR,
 )
 
 # Celery beat schedule
@@ -63,6 +64,7 @@ celery_app.conf.beat_schedule = {
 }
 celery_app.conf.timezone = "UTC"
 
+# Trigger both tasks on startup
 @celery_app.on_after_finalize.connect
 def startup(sender, **kwargs):
     sender.send_task(train_and_publish_task.name)
