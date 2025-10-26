@@ -1,45 +1,59 @@
 version: "3.9"
 
 services:
-  web:
-    build: .
-    command: python manage.py runserver 0.0.0.0:8000
-    volumes:
-      - .:/app
-    ports:
-      - "8000:8000"
-    depends_on:
-      - redis
-      - db
-    env_file: example.env
-
-  celery:
-    build: .
-    command: celery -A config worker -l info
-    volumes:
-      - .:/app
-    depends_on:
-      - redis
-      - db
-    env_file: example.env
-
-  telegram-bot:
-    build: .
-    command: python -m app.bot
-    volumes:
-      - .:/app
-    depends_on:
-      - redis
-    env_file: example.env
-
   redis:
     image: redis:7
+    command: ["redis-server", "--requirepass", "redis_password"]
+    environment:
+      REDIS_USER: "redis_user"
+      REDIS_PASSWORD: "redis_password"
+      REDIS_DB: 0
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis_password", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
-  db:
+  postgres:
     image: postgres:15
     environment:
-      POSTGRES_USER: pg
-      POSTGRES_PASSWORD: pg
-      POSTGRES_DB: appdb
+      POSTGRES_USER: cs2_user
+      POSTGRES_PASSWORD: cs2_password
+      POSTGRES_DB: cs2_db
     ports:
       - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cs2_user -d cs2_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s  
+
+  flower:
+    image: mher/flower:latest
+    entrypoint: ["python", "-m", "flower"]
+    command: ["--broker=redis://redis_user:redis_password@redis:6379/0", "--port=5555"]
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+
+  fluentd:
+    image: fluent/fluentd:v1.16-1
+    container_name: fluentd
+    ports:
+      - "9880:9880"  
+    volumes:
+      - ./fluentd/conf:/fluentd/etc          
+      - ./fluentd/log:/fluentd/log          
+    environment:
+      FLUENTD_CONF: fluent.conf
+    command: ["fluentd", "-c", "/fluentd/etc/fluent.conf", "-v"]
+
+volumes:
+  postgres_data:

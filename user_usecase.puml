@@ -1,0 +1,28 @@
+@startuml
+title Поток выполнения предсказания матча
+
+actor User
+
+User -> REST_API : POST /predict/ (данные матча)
+REST_API -> PredictHandler : Валидация и сохранение данных
+PredictHandler -> Database : Создание записи prediction
+PredictHandler --> User : Возврат prediction_id и status=inference_started
+
+REST_API -> CeleryQueue : Отправка задачи run_inference
+CeleryQueue -> Worker : Выполнение задачи run_inference
+Worker -> ML_Pipeline : Загрузка данных и извлечение признаков
+ML_Pipeline -> ML_Model : Выполнение инференса
+ML_Model -> ML_Pipeline : Результаты предсказания
+ML_Pipeline -> Database : Сохранение результатов и метрик
+Worker -> WebSocketService : Отправка результатов prediction_id
+
+User -> WebSocketService : Подписка на /ws/predictions/
+WebSocketService --> User : Доставка результата (статус + прогноз)
+
+note over CeleryQueue, Worker
+Периодические задачи:
+- fill_dictionaries_task (обновление словарей)
+- run_ml_pipeline_task (ежедневное переобучение ML)
+end note
+
+@enduml

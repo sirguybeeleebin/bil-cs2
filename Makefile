@@ -16,10 +16,9 @@ test:
 prune:
 	docker compose stop
 	docker container prune -f
-	docker volume prune -f
-	docker volume rm bil-cs2_mongo_data
+	docker volume prune -f	
 	docker volume rm bil-cs2_postgres_data
 
 up:
-	docker compose --env-file .env up --build
+	docker compose up --build
 

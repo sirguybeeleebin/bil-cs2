@@ -1,17 +1,21 @@
 from rest_framework import serializers
 
-class PredictSerializer(serializers.Serializer):
+from app.models import Prediction
+
+
+class PredictionRequestSerializer(serializers.Serializer):
     map_id = serializers.IntegerField()
     team1_id = serializers.IntegerField()
     team2_id = serializers.IntegerField()
-    team1_player1_id = serializers.IntegerField()
-    team1_player2_id = serializers.IntegerField()
-    team1_player3_id = serializers.IntegerField()
-    team1_player4_id = serializers.IntegerField()
-    team1_player5_id = serializers.IntegerField()
-    team2_player1_id = serializers.IntegerField()
-    team2_player2_id = serializers.IntegerField()
-    team2_player3_id = serializers.IntegerField()
-    team2_player4_id = serializers.IntegerField()
-    team2_player5_id = serializers.IntegerField()
-    team_id_start_ct = serializers.IntegerField()
+
+    def validate(self, data):
+        if data["team1_id"] == data["team2_id"]:
+            raise serializers.ValidationError("Команды должны быть разными")
+        return data
+
+
+class PredictionResponseSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Prediction
+        fields = ["id", "status", "result", "created_at"]
+        read_only_fields = fields
