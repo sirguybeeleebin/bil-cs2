@@ -11,7 +11,6 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import KFold, TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 
-# Настройка логирования
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 

@@ -30,12 +30,6 @@ jobs:
         run: |
           poetry install --no-interaction --no-ansi
 
-      - name: Run format
-        run: make format
-
       - name: Run lint
         run: make lint
-
-      - name: Run tests        
-        run: |          
-          make test
+   

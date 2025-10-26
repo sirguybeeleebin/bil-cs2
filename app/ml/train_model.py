@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
-def run_ml_pipeline(
+def train_model(
     path_to_games_raw_dir: str = "data/games_raw",
     test_size: int = 100,
     n_splits: int = 10,
