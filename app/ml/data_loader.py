@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
-def generate_game_raw(path_to_dir: str) -> Generator[dict[str, Any], None, None]:
+def _generate_game_raw(path_to_dir: str) -> Generator[dict[str, Any], None, None]:
     path = Path(path_to_dir)
     for json_file in path.glob("*.json"):
         try:
@@ -66,7 +66,7 @@ def get_game_ids(path_to_dir: str) -> list[int]:
     begin_ats: list[Any] = []
     game_ids: list[int] = []
     log.info(f"Начало загрузки игр из {path_to_dir}")
-    for game in generate_game_raw(path_to_dir):
+    for game in _generate_game_raw(path_to_dir):
         if _validate_game(game):
             begin_ats.append(parse(game["begin_at"]))
             game_ids.append(int(game["id"]))

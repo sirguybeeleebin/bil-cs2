@@ -1,16 +1,13 @@
-import logging
 import json
+import logging
 import uuid
-from django.conf import settings  # <--- исправлено
-from app.tasks import send_log_to_fluentd
 
 logger = logging.getLogger("django.request_json")
 
-class JsonLoggingMiddleware:
+
+class LoggingMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
-        self.fluentd_url = settings.FLUENTD_URL  # <-- берем из settings
-        self.send_task = send_log_to_fluentd
 
     def __call__(self, request):
         request_id = uuid.uuid4().hex
@@ -35,7 +32,6 @@ class JsonLoggingMiddleware:
         }
 
         logger.info(json.dumps(request_log, ensure_ascii=False))
-        self.send_task.delay(self.fluentd_url, request_log)
 
         response = self.get_response(request)
 
@@ -58,6 +54,5 @@ class JsonLoggingMiddleware:
         }
 
         logger.info(json.dumps(response_log, ensure_ascii=False))
-        self.send_task.delay(self.fluentd_url, response_log)
 
         return response

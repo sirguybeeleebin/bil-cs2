@@ -1,28 +1,52 @@
 @startuml
-title Поток выполнения предсказания матча
+title Поток выполнения предсказания матча с фоновой работой воркеров
 
 actor User
 
-User -> REST_API : POST /predict/ (данные матча)
-REST_API -> PredictHandler : Валидация и сохранение данных
-PredictHandler -> Database : Создание записи prediction
-PredictHandler --> User : Возврат prediction_id и status=inference_started
+participant REST_API
+participant AuthHandler
+participant ForecastHandler
+participant CeleryQueue
+participant Worker
+participant ML_Pipeline
+participant WebSocketService
 
-REST_API -> CeleryQueue : Отправка задачи run_inference
-CeleryQueue -> Worker : Выполнение задачи run_inference
-Worker -> ML_Pipeline : Загрузка данных и извлечение признаков
-ML_Pipeline -> ML_Model : Выполнение инференса
-ML_Model -> ML_Pipeline : Результаты предсказания
-ML_Pipeline -> Database : Сохранение результатов и метрик
-Worker -> WebSocketService : Отправка результатов prediction_id
+' 0. Регистрация / аутентификация
+User -> REST_API : Регистрация / Логин
+REST_API -> AuthHandler : Проверка данных пользователя
+AuthHandler --> REST_API : Токен аутентификации
+REST_API --> User : Токен
 
-User -> WebSocketService : Подписка на /ws/predictions/
-WebSocketService --> User : Доставка результата (статус + прогноз)
+' 1. Выбор карты, команд и игроков
+User -> REST_API : Выбор карты (точное совпадение/список)
+REST_API --> User : ID карты
+User -> REST_API : Выбор команд (точное совпадение/список)
+REST_API --> User : ID команд
+User -> REST_API : Выбор игроков (точное совпадение/список)
+REST_API --> User : ID игроков
 
-note over CeleryQueue, Worker
-Периодические задачи:
-- fill_dictionaries_task (обновление словарей)
-- run_ml_pipeline_task (ежедневное переобучение ML)
+' 2. Пользователь запрашивает предсказание
+User -> REST_API : Запрос предсказания (map_id, team1_id, team2_id, player_ids) + токен
+REST_API -> ForecastHandler : Передача данных запроса
+ForecastHandler -> CeleryQueue : Запуск асинхронного инференса
+ForecastHandler --> User : ml_forecast_id + статус
+
+' 3. Асинхронный ML-пайплайн
+CeleryQueue -> Worker : Выполнить инференс
+Worker -> ML_Pipeline : Обработка данных и инференс
+ML_Pipeline --> Worker : Результаты предсказания
+
+' 4. Доставка результатов пользователю
+Worker -> WebSocketService : Отправка результатов
+User -> WebSocketService : Подписка на обновления
+WebSocketService --> User : Доставка прогноза и статуса
+
+' 5. Фоновая работа воркеров
+note over Worker, CeleryQueue
+Фоновые задачи Celery:
+- fill_dictionaries_task (каждый час)
+- ml_pipeline_task (ежедневное переобучение ML)
+Запускаются автоматически при старте воркера
 end note
 
 @enduml
