@@ -11,8 +11,8 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         task = make_train_model_task(
             train_model_func=train_model,
-            ml_result_repository=ml_result_repo,
-            ml_result_metrics_repository=ml_result_metrics_repo,
+            ml_pipeline_repository=ml_result_repo,
+            ml_pipeline_metrics_repository=ml_result_metrics_repo,
         )
         result = task.apply_async()
         self.stdout.write(f"Запущена тренировка модели, task_id={result.id}")
