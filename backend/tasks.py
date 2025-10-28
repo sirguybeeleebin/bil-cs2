@@ -5,6 +5,10 @@ import uuid
 from pathlib import Path
 from typing import Callable, Optional
 from uuid import UUID
+<<<<<<< HEAD
+
+=======
+>>>>>>> origin/main
 import joblib
 from celery import shared_task
 from django.conf import settings
@@ -33,8 +37,9 @@ def make_update_dictionaries_task(
     maps_dir: str = settings.MAPS_DIR,
     teams_dir: str = settings.TEAMS_DIR,
     players_dir: str = settings.PLAYERS_DIR,
+    task_name: str = "backend.tasks.update_dictionaries_task",
 ) -> Callable[..., None]:
-    @shared_task(name="backend.tasks.update_dictionaries_task")
+    @shared_task(name=task_name)
     def task(*args, **kwargs) -> None:
         log.info("Запуск задачи обновления словарей...")
         update_dictionaries_func(
@@ -55,8 +60,9 @@ def make_load_dictionaries_task(
     map_repository: MapRepository = map_repo,
     team_repository: TeamRepository = team_repo,
     player_repository: PlayerRepository = player_repo,
+    task_name: str = "backend.tasks.load_dictionaries_task",
 ) -> Callable[..., None]:
-    @shared_task(name="backend.tasks.load_dictionaries_task")
+    @shared_task(name=task_name)
     def task(*args, **kwargs) -> None:
         log.info("Запуск задачи загрузки словарей в БД...")
 
@@ -108,8 +114,12 @@ def make_train_model_task(
     random_state: int = settings.RANDOM_STATE,
     ml_pipeline_repository: MLPipelineRepository = ml_result_repo,
     ml_pipeline_metrics_repository: MLPipelineMetricRepository = ml_result_metrics_repo,
+<<<<<<< HEAD
+    task_name: str = "backend.tasks.train_model_task",
+=======
+>>>>>>> origin/main
 ) -> Callable[..., dict]:
-    @shared_task(name="backend.tasks.train_model_task")
+    @shared_task(name=task_name)
     def task(*args, **kwargs) -> dict:
         try:
             log.info("Начало обучения ML модели...")
@@ -134,7 +144,10 @@ def make_train_model_task(
             log.info(f"ML модель сохранена: {pipeline_path}")
             log.info(f"Метрики модели сохранены: {metrics_path}")
 
+<<<<<<< HEAD
+=======
             # Используем новые репозитории
+>>>>>>> origin/main
             ml_result: Optional[dict] = ml_pipeline_repository.upsert(
                 pipeline_file=pipeline_path, metrics_file=metrics_path
             )

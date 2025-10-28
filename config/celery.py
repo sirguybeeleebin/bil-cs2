@@ -31,23 +31,31 @@ def setup_tasks(sender, **kwargs):
     from train_model.train_model import train_model
     from update_dictionaries.update_dictionaries import update_dictionaries
 
-    # --- Создание задач через фабрики ---
+    # --- Создание задач через фабрики с явными именами ---
     update_dicts_task = make_update_dictionaries_task(
-        update_dictionaries_func=update_dictionaries
+        update_dictionaries_func=update_dictionaries,
+        task_name="backend.tasks.update_dictionaries_task",
     )
     load_dicts_task = make_load_dictionaries_task(
         map_repository=map_repo,
         team_repository=team_repo,
         player_repository=player_repo,
+        task_name="backend.tasks.load_dictionaries_task",
     )
     train_model_task = make_train_model_task(
         train_model_func=train_model,
         ml_pipeline_repository=ml_result_repo,
         ml_pipeline_metrics_repository=ml_result_metrics_repo,
+<<<<<<< HEAD
+        task_name="backend.tasks.train_model_task",
+=======
+>>>>>>> origin/main
     )
 
     # --- Цепочка обновления и загрузки словарей ---
-    @app.task(name="backend.tasks.chain_update_and_load")
+    chain_update_and_load_task_name = "backend.tasks.chain_update_and_load"
+
+    @app.task(name=chain_update_and_load_task_name)
     def chain_update_and_load_task():
         return chain(update_dicts_task.s(), load_dicts_task.s()).apply_async()
 
@@ -65,7 +73,7 @@ def setup_tasks(sender, **kwargs):
     PeriodicTask.objects.update_or_create(
         name="update-dictionaries-every-hour",
         defaults={
-            "task": "backend.tasks.chain_update_and_load",
+            "task": chain_update_and_load_task_name,
             "interval": hourly,
             "args": json.dumps([]),
         },
@@ -81,5 +89,6 @@ def setup_tasks(sender, **kwargs):
     )
 
 
+# Запуск setup_tasks только для воркера
 if os.environ.get("RUN_MAIN") is None and os.environ.get("CELERY_WORKER") == "1":
     setup_tasks()
