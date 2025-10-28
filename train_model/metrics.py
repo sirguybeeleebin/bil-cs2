@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import json
-import logging
-
 import numpy as np
 from sklearn.metrics import (
     accuracy_score,
@@ -12,6 +9,7 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
+
 
 def get_metrics(y_test: np.ndarray, y_test_pred_proba: np.ndarray) -> dict[str, float]:
     y_proba = y_test_pred_proba

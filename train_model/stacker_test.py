@@ -1,42 +1,69 @@
 import numpy as np
-import pytest
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from app.ml.stacker import MLStacker, OOFPredictor
+from train_model.feature_extractors import ColumnSelectorArray
+from train_model.stacker import OOFPredictor, Stacker
 
 
-def test_oof_predictor_basic():
-    X = np.random.rand(20, 5)
-    y = np.random.randint(0, 2, size=20)
+def test_oof_predictor_fit_predict():
+    # synthetic dataset
+    X = np.array([[1], [2], [3], [4], [5], [6]])
+    y = np.array([0, 0, 1, 1, 0, 1])
 
-    oof = OOFPredictor(n_splits=5, random_state=42)
-    oof.fit(X, y, i=0)
+    oof = OOFPredictor(n_splits=3, random_state=42)
+    oof.fit(X, y)
     preds = oof.predict_proba(X)
 
-    assert preds.shape == (X.shape[0],)
-    assert np.all((preds >= 0) & (preds <= 1))
+    assert preds.shape[0] == X.shape[0]
+    assert np.all(preds >= 0) and np.all(preds <= 1)
     oof_preds = oof.get_oof_predictions()
-    assert oof_preds.shape == (X.shape[0],)
+    assert oof_preds.shape[0] == X.shape[0]
 
 
-@pytest.fixture
-def pipelines():
-    pipe1 = Pipeline([("scaler", StandardScaler())])
-    pipe2 = Pipeline([("scaler", StandardScaler())])
-    return [("pipe1", pipe1), ("pipe2", pipe2)]
+def test_ml_stacker_fit_predict():
+    # synthetic dataset
+    X = np.array([[i] * 10 for i in range(1, 11)])
+    y = np.array([0, 1, 0, 1, 0, 1, 0, 1, 0, 1])
 
+    # simple pipelines
+    pipelines = [
+        (
+            "scale",
+            Pipeline(
+                [
+                    ("select", ColumnSelectorArray([0, 1, 2])),
+                    ("scale", StandardScaler()),
+                ]
+            ),
+        ),
+        ("first3", Pipeline([("select", ColumnSelectorArray([0, 1, 2]))])),
+    ]
 
-def test_ml_stacker_fit_predict(pipelines):
-    X = np.random.rand(20, 5)
-    y = np.random.randint(0, 2, size=20)
-    oof = OOFPredictor(n_splits=4, random_state=42)
-
-    stacker = MLStacker(
-        pipelines=pipelines, oof_predictor=oof, n_iters=2, random_state=42
-    )
+    oof_predictor = OOFPredictor(n_splits=2, random_state=42)
+    stacker = Stacker(pipelines=pipelines, oof_predictor=oof_predictor)
     stacker.fit(X, y)
     preds = stacker.predict_proba(X)
 
-    assert preds.shape == (X.shape[0],)
-    assert np.all((preds >= 0) & (preds <= 1))
+    assert preds.shape[0] == X.shape[0]
+    assert np.all(preds >= 0) and np.all(preds <= 1)
+
+
+def test_ml_stacker_pipeline_order_preserved():
+    X = np.random.randint(0, 10, (6, 5))
+    y = np.array([0, 1, 0, 1, 0, 1])
+
+    pipelines = [
+        ("pipe1", Pipeline([("sel", ColumnSelectorArray([0, 1]))])),
+        ("pipe2", Pipeline([("sel", ColumnSelectorArray([2, 3]))])),
+    ]
+
+    oof_predictor = OOFPredictor(n_splits=2)
+    stacker = Stacker(pipelines, oof_predictor=oof_predictor)
+    stacker.fit(X, y)
+
+    # Check meta features shape
+    X_meta = np.column_stack(
+        [stacker.oof_preds_train_avg[name] for name, _ in pipelines]
+    )
+    assert X_meta.shape[1] == len(pipelines)

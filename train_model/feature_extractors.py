@@ -31,7 +31,9 @@ class BagEncoder(BaseEstimator, TransformerMixin):
         uniques = np.unique(arr.flatten())
         self.dict_: dict[int, int] = {v: i for i, v in enumerate(uniques)}
         self.n_features_: int = len(self.dict_)
-        log.info(f"BagEncoder: создан словарь с {self.n_features_} уникальными значениями")
+        log.info(
+            f"BagEncoder: создан словарь с {self.n_features_} уникальными значениями"
+        )
         return self
 
     def transform(self, X: np.ndarray, y=None) -> csr_matrix:
@@ -82,14 +84,20 @@ class PlayerEloEncoder(BaseEstimator, TransformerMixin):
             for i, pid in enumerate(row[:5]):
                 old_elo = self.elo_dict_.get(pid, self.base_elo)
                 self.elo_dict_[pid] = old_elo + self.k_factor * (score1 - exp1)
-                log.info(f"Игра {row_idx+1}/{total}, левый игрок {pid}: Elo до={old_elo:.2f}, Elo после={self.elo_dict_[pid]:.2f}")
+                log.info(
+                    f"Игра {row_idx + 1}/{total}, левый игрок {pid}: Elo до={old_elo:.2f}, Elo после={self.elo_dict_[pid]:.2f}"
+                )
 
             for i, pid in enumerate(row[5:]):
                 old_elo = self.elo_dict_.get(pid, self.base_elo)
                 self.elo_dict_[pid] = old_elo + self.k_factor * (score2 - (1 - exp1))
-                log.info(f"Игра {row_idx+1}/{total}, правый игрок {pid}: Elo до={old_elo:.2f}, Elo после={self.elo_dict_[pid]:.2f}")
+                log.info(
+                    f"Игра {row_idx + 1}/{total}, правый игрок {pid}: Elo до={old_elo:.2f}, Elo после={self.elo_dict_[pid]:.2f}"
+                )
 
-            log.info(f"Игра {row_idx+1}/{total}: avg1={avg1:.2f}, avg2={avg2:.2f}, expected1={exp1:.2f}, исход={outcome}")
+            log.info(
+                f"Игра {row_idx + 1}/{total}: avg1={avg1:.2f}, avg2={avg2:.2f}, expected1={exp1:.2f}, исход={outcome}"
+            )
 
         self.X_elo_train_ = np.array(X_elo, dtype=float)
         log.info("PlayerEloEncoder: обучение завершено")
@@ -105,7 +113,9 @@ class PlayerEloEncoder(BaseEstimator, TransformerMixin):
                 dtype=float,
             )
         augmented = np.array([self._augment_X(row) for row in X_out], dtype=float)
-        log.info(f"PlayerEloEncoder: трансформация завершена, выходной массив размером {augmented.shape}")
+        log.info(
+            f"PlayerEloEncoder: трансформация завершена, выходной массив размером {augmented.shape}"
+        )
         return augmented
 
 
@@ -124,24 +134,36 @@ class PlayerStatisticSumExtractor(BaseEstimator, TransformerMixin):
     def fit(self, X: np.ndarray, y=None) -> PlayerStatisticSumExtractor:
         X_out: list[list[float]] = []
         total = X.shape[0]
-        log.info(f"PlayerStatisticSumExtractor: обучение на {X.shape[0]} матчах, ключ '{self.key}'")
+        log.info(
+            f"PlayerStatisticSumExtractor: обучение на {X.shape[0]} матчах, ключ '{self.key}'"
+        )
         for row_idx, row in enumerate(X):
             X_out.append([self.player_stat_dict.get(pid, 0.0) for pid in row])
             if row_idx < len(self.game_ids):
                 game_id = self.game_ids[row_idx]
                 try:
-                    with open(os.path.join(self.path_to_dir, f"{game_id}.json"), "r", encoding="utf-8") as f:
+                    with open(
+                        os.path.join(self.path_to_dir, f"{game_id}.json"),
+                        "r",
+                        encoding="utf-8",
+                    ) as f:
                         game = json.load(f)
                     for p in game["players"]:
                         p_id = p["player"]["id"]
                         current = self.player_stat_dict.get(p_id, 0.0)
                         current += p.get(self.key, 0.0) or 0.0
                         self.player_stat_dict[p_id] = current
-                    log.info(f"Игра {row_idx+1}/{total}: обновлены статистики игроков для игры {game_id}")
+                    log.info(
+                        f"Игра {row_idx + 1}/{total}: обновлены статистики игроков для игры {game_id}"
+                    )
                 except Exception as e:
-                    log.error(f"PlayerStatisticSumExtractor: ошибка чтения игры {game_id}: {e}")
+                    log.error(
+                        f"PlayerStatisticSumExtractor: ошибка чтения игры {game_id}: {e}"
+                    )
         self.X_train_ = np.array(X_out, dtype=float)
-        log.info(f"PlayerStatisticSumExtractor: обучение завершено для ключа '{self.key}'")
+        log.info(
+            f"PlayerStatisticSumExtractor: обучение завершено для ключа '{self.key}'"
+        )
         return self
 
     def transform(self, X: np.ndarray, y=None) -> np.ndarray:
@@ -149,19 +171,26 @@ class PlayerStatisticSumExtractor(BaseEstimator, TransformerMixin):
         for row in X:
             stats = [self.player_stat_dict.get(pid, 0.0) for pid in row]
             X_out.append(self._augment(np.array(stats, dtype=float)))
-        log.info(f"PlayerStatisticSumExtractor: трансформация массива размером {X.shape}")
+        log.info(
+            f"PlayerStatisticSumExtractor: трансформация массива размером {X.shape}"
+        )
         return np.array(X_out, dtype=float)
 
     def _augment(self, row: np.ndarray) -> np.ndarray:
         left_team, right_team = row[:5], row[5:]
         left_sorted, right_sorted = np.sort(left_team), np.sort(right_team)
         mean_left, mean_right = np.mean(left_sorted), np.mean(right_sorted)
-        features: list[float] = [*left_sorted, *right_sorted, mean_left, mean_right, mean_left - mean_right]
+        features: list[float] = [
+            *left_sorted,
+            *right_sorted,
+            mean_left,
+            mean_right,
+            mean_left - mean_right,
+        ]
         for i in range(5):
             for j in range(5):
                 features.append(left_sorted[i] - right_sorted[j])
         return np.array(features, dtype=float)
-    
 
 
 class PlayerMapStatisticSumExtractor(BaseEstimator, TransformerMixin):
@@ -173,13 +202,15 @@ class PlayerMapStatisticSumExtractor(BaseEstimator, TransformerMixin):
     ) -> None:
         self.game_ids: list[int] = game_ids
         self.path_to_dir: str = path_to_dir
-        self.key: str = key 
+        self.key: str = key
         self.player_stat_dict: dict[int, dict[int, float]] = {}
 
     def fit(self, X: np.ndarray, y=None) -> PlayerMapStatisticSumExtractor:
         X_out: list[list[float]] = []
         total = X.shape[0]
-        log.info(f"PlayerMapStatisticSumExtractor: обучение на {total} матчах, ключ '{self.key}'")
+        log.info(
+            f"PlayerMapStatisticSumExtractor: обучение на {total} матчах, ключ '{self.key}'"
+        )
 
         for row_idx, row in enumerate(X):
             map_id = row[0]  # предполагаем, что map_id в первой колонке
@@ -189,7 +220,11 @@ class PlayerMapStatisticSumExtractor(BaseEstimator, TransformerMixin):
             if row_idx < len(self.game_ids):
                 game_id = self.game_ids[row_idx]
                 try:
-                    with open(os.path.join(self.path_to_dir, f"{game_id}.json"), "r", encoding="utf-8") as f:
+                    with open(
+                        os.path.join(self.path_to_dir, f"{game_id}.json"),
+                        "r",
+                        encoding="utf-8",
+                    ) as f:
                         game = json.load(f)
                     map_id = game["map"]["id"]  # берем карту из файла, на всякий случай
                     if map_id not in self.player_stat_dict:
@@ -200,9 +235,13 @@ class PlayerMapStatisticSumExtractor(BaseEstimator, TransformerMixin):
                         current += p.get(self.key, 0.0) or 0.0
                         self.player_stat_dict[map_id][p_id] = current
                         stats_row.append(self.player_stat_dict[map_id][p_id])
-                    log.info(f"Игра {row_idx+1}/{total}: обновлены статистики игроков для игры {game_id} на карте {map_id}")
+                    log.info(
+                        f"Игра {row_idx + 1}/{total}: обновлены статистики игроков для игры {game_id} на карте {map_id}"
+                    )
                 except Exception as e:
-                    log.error(f"PlayerMapStatisticSumExtractor: ошибка чтения игры {game_id}: {e}")
+                    log.error(
+                        f"PlayerMapStatisticSumExtractor: ошибка чтения игры {game_id}: {e}"
+                    )
 
             # Если нет данных для карты, используем нули
             if not stats_row:
@@ -211,30 +250,42 @@ class PlayerMapStatisticSumExtractor(BaseEstimator, TransformerMixin):
             X_out.append(stats_row)
 
         self.X_train_ = np.array(X_out, dtype=float)
-        log.info(f"PlayerMapStatisticSumExtractor: обучение завершено для ключа '{self.key}'")
+        log.info(
+            f"PlayerMapStatisticSumExtractor: обучение завершено для ключа '{self.key}'"
+        )
         return self
 
     def transform(self, X: np.ndarray, y=None) -> np.ndarray:
         X_out: list[np.ndarray] = []
-        total = X.shape[0]
+        X.shape[0]
 
         for row_idx, row in enumerate(X):
             map_id = row[0]
             player_ids = row[1:]
             if map_id in self.player_stat_dict:
-                stats = [self.player_stat_dict[map_id].get(pid, 0.0) for pid in player_ids]
+                stats = [
+                    self.player_stat_dict[map_id].get(pid, 0.0) for pid in player_ids
+                ]
             else:
                 stats = [0.0 for _ in player_ids]
             X_out.append(self._augment(np.array(stats, dtype=float)))
 
-        log.info(f"PlayerMapStatisticSumExtractor: трансформация массива размером {X.shape}")
+        log.info(
+            f"PlayerMapStatisticSumExtractor: трансформация массива размером {X.shape}"
+        )
         return np.array(X_out, dtype=float)
 
     def _augment(self, row: np.ndarray) -> np.ndarray:
         left_team, right_team = row[:5], row[5:]
         left_sorted, right_sorted = np.sort(left_team), np.sort(right_team)
         mean_left, mean_right = np.mean(left_sorted), np.mean(right_sorted)
-        features: list[float] = [*left_sorted, *right_sorted, mean_left, mean_right, mean_left - mean_right]
+        features: list[float] = [
+            *left_sorted,
+            *right_sorted,
+            mean_left,
+            mean_right,
+            mean_left - mean_right,
+        ]
         for i in range(5):
             for j in range(5):
                 features.append(left_sorted[i] - right_sorted[j])

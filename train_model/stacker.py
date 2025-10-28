@@ -6,9 +6,8 @@ from collections import OrderedDict
 import numpy as np
 from scipy.sparse import issparse
 from sklearn.base import BaseEstimator, ClassifierMixin, clone
-from sklearn.feature_selection import RFECV
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import KFold, TimeSeriesSplit
+from sklearn.model_selection import KFold
 from sklearn.pipeline import Pipeline
 
 log = logging.getLogger(__name__)
@@ -32,9 +31,7 @@ class OOFPredictor(BaseEstimator, ClassifierMixin):
         y = np.array(y)
         self.oof_predictions_ = np.zeros(X.shape[0])
         self.base_models_ = []
-        kf = KFold(
-            n_splits=self.n_splits, shuffle=True, random_state=self.random_state
-        )
+        kf = KFold(n_splits=self.n_splits, shuffle=True, random_state=self.random_state)
         log.info(f"Начало обучения OOFPredictor с {self.n_splits}-fold CV")
         for fold, (train_idx, val_idx) in enumerate(kf.split(X), 1):
             model = clone(self.base_model)
@@ -59,7 +56,7 @@ class OOFPredictor(BaseEstimator, ClassifierMixin):
         return self.oof_predictions_
 
 
-class MLStacker:
+class Stacker:
     def __init__(
         self,
         pipelines: list[tuple[str, Pipeline]],
@@ -76,8 +73,10 @@ class MLStacker:
             solver="liblinear", random_state=self.random_state
         )
 
-    def fit(self, X_train: np.ndarray, y_train: np.ndarray) -> MLStacker:
-        log.info(f"Начало обучения MLStacker с {len(self.pipelines)} пайплайнами")
+    def fit(self, X_train: np.ndarray, y_train: np.ndarray) -> Stacker:
+        log.info(f"Начало обучения Stacker с {len(self.pipelines)} пайплайнами")
+
+        # Fit each pipeline and OOF predictor
         for name, pipe in self.pipelines:
             log.info(f"Обработка пайплайна: {name}")
             X_train_feat = pipe.fit_transform(X_train, y_train)
@@ -87,25 +86,21 @@ class MLStacker:
             self.oof_models[name] = [oof_model]
             log.info(f"{name} - OOF предсказания выполнены")
 
-        X_meta_train = np.column_stack(
+        # Form meta-features
+        self.X_meta_train = np.column_stack(
             [self.oof_preds_train_avg[name] for name in self.oof_preds_train_avg]
         )
         log.info("Формирование мета-признаков завершено")
 
-        tscv = TimeSeriesSplit(n_splits=10)
-        self.rfecv_ = RFECV(
-            estimator=self.final_model, step=1, cv=tscv, scoring="roc_auc", n_jobs=-1
-        )
-        log.info("Начало RFECV для отбора признаков мета-уровня")
-        self.rfecv_.fit(X_meta_train, y_train)
-        X_meta_train_selected = self.rfecv_.transform(X_meta_train)
-        self.final_model.fit(X_meta_train_selected, y_train)
-        log.info("MLStacker обучение завершено")
+        # Train final model on meta-features directly
+        self.final_model.fit(self.X_meta_train, y_train)
+        log.info("Stacker обучение завершено")
         return self
 
     def predict_proba(self, X_test: np.ndarray) -> np.ndarray:
-        log.info(f"MLStacker: предсказание для {X_test.shape[0]} примеров")
+        log.info(f"Stacker: предсказание для {X_test.shape[0]} примеров")
         meta_features: list[np.ndarray] = []
+
         for name, pipe in self.pipelines:
             X_test_feat = pipe.transform(X_test)
             preds_list = [
@@ -114,8 +109,8 @@ class MLStacker:
             avg_preds = np.mean(np.column_stack(preds_list), axis=1)
             meta_features.append(avg_preds)
             log.info(f"{name} - предсказания средние по {len(preds_list)} моделям")
+
         X_meta_test = np.column_stack(meta_features)
-        X_meta_test_selected = self.rfecv_.transform(X_meta_test)
-        final_preds = self.final_model.predict_proba(X_meta_test_selected)[:, 1]
-        log.info("MLStacker: предсказания выполнены")
+        final_preds = self.final_model.predict_proba(X_meta_test)[:, 1]
+        log.info("Stacker: предсказания выполнены")
         return final_preds

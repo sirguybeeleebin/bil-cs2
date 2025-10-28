@@ -1,10 +1,12 @@
 import logging
+
 import numpy as np
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import cross_val_score, TimeSeriesSplit
+from sklearn.model_selection import TimeSeriesSplit, cross_val_score
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+
 
 class LogitL1FeatureSelector:
     def __init__(
@@ -19,7 +21,7 @@ class LogitL1FeatureSelector:
         self.C_values = C_values
         self.max_iter = max_iter
         self.scoring = scoring
-        self.cv = cv  
+        self.cv = cv
         self.random_state = random_state
         self.n_jobs = n_jobs
         self.selected_idx_ = None
@@ -38,11 +40,11 @@ class LogitL1FeatureSelector:
         for C in self.C_values:
             log.info(f"Проверка C={C}")
             logit = LogisticRegression(
-                penalty='l1',
-                solver='liblinear',
+                penalty="l1",
+                solver="liblinear",
                 C=C,
                 max_iter=self.max_iter,
-                random_state=self.random_state
+                random_state=self.random_state,
             )
             logit.fit(X, y)
             mask = logit.coef_.flatten() != 0
@@ -55,9 +57,9 @@ class LogitL1FeatureSelector:
 
             score = cross_val_score(
                 LogisticRegression(
-                    solver='liblinear', 
-                    max_iter=self.max_iter, 
-                    random_state=self.random_state,                    
+                    solver="liblinear",
+                    max_iter=self.max_iter,
+                    random_state=self.random_state,
                 ),
                 X[:, mask],
                 y,
@@ -73,23 +75,29 @@ class LogitL1FeatureSelector:
                 best_mask = mask
                 best_C = C
                 best_model = LogisticRegression(
-                    solver='liblinear', 
-                    max_iter=self.max_iter, 
+                    solver="liblinear",
+                    max_iter=self.max_iter,
                     random_state=self.random_state,
                 )
                 best_model.fit(X[:, best_mask], y)
                 log.info(f"Новый лучший C={best_C}, лучший score={best_score:.4f}")
 
-        self.selected_idx_ = np.where(best_mask)[0] if best_mask is not None else np.array([])
+        self.selected_idx_ = (
+            np.where(best_mask)[0] if best_mask is not None else np.array([])
+        )
         self.model_ = best_model
         self.best_C_ = best_C
         self.best_score_ = best_score
 
-        log.info(f"Обучение завершено: лучший C={self.best_C_}, выбрано признаков {len(self.selected_idx_)}/{X.shape[1]}, лучший CV score={self.best_score_:.4f}")
+        log.info(
+            f"Обучение завершено: лучший C={self.best_C_}, выбрано признаков {len(self.selected_idx_)}/{X.shape[1]}, лучший CV score={self.best_score_:.4f}"
+        )
         return self
 
     def transform(self, X):
         if self.selected_idx_ is None:
             raise ValueError("Сначала вызовите метод fit")
-        log.info(f"LogitL1FeatureSelector: трансформация массива размером {X.shape} с {len(self.selected_idx_)} выбранными признаками")
+        log.info(
+            f"LogitL1FeatureSelector: трансформация массива размером {X.shape} с {len(self.selected_idx_)} выбранными признаками"
+        )
         return X[:, self.selected_idx_]
