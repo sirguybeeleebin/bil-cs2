@@ -32,6 +32,8 @@ django = "*"
 django-celery-beat = "*"
 django-telegrambot = "*"
 djangorestframework = "*"
+djangorestframework-simplejwt = "^5.5.1"
+drf-spectacular = "^0.28.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"

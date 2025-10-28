@@ -18,6 +18,5 @@ class Command(BaseCommand):
             team_repository=team_repo,
             player_repository=player_repo,
         )
-
         result = chain(update_task.s(), load_task.s()).apply_async()
         self.stdout.write(f"Запущена цепочка update + load, task_id={result.id}")

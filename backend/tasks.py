@@ -5,10 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Callable, Optional
 from uuid import UUID
-<<<<<<< HEAD
 
-=======
->>>>>>> origin/main
 import joblib
 from celery import shared_task
 from django.conf import settings
@@ -114,10 +111,7 @@ def make_train_model_task(
     random_state: int = settings.RANDOM_STATE,
     ml_pipeline_repository: MLPipelineRepository = ml_result_repo,
     ml_pipeline_metrics_repository: MLPipelineMetricRepository = ml_result_metrics_repo,
-<<<<<<< HEAD
     task_name: str = "backend.tasks.train_model_task",
-=======
->>>>>>> origin/main
 ) -> Callable[..., dict]:
     @shared_task(name=task_name)
     def task(*args, **kwargs) -> dict:
@@ -144,10 +138,6 @@ def make_train_model_task(
             log.info(f"ML модель сохранена: {pipeline_path}")
             log.info(f"Метрики модели сохранены: {metrics_path}")
 
-<<<<<<< HEAD
-=======
-            # Используем новые репозитории
->>>>>>> origin/main
             ml_result: Optional[dict] = ml_pipeline_repository.upsert(
                 pipeline_file=pipeline_path, metrics_file=metrics_path
             )
