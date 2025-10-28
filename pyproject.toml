@@ -3,31 +3,21 @@ name = "prediction-service"
 version = "0.1.0"
 description = "Сервис для ML предсказаний"
 authors = ["Your Name <you@example.com>"]
-packages = [{ include = "app" }]
+package-mode = false  # <--- отключаем установку текущего проекта
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.14"
-django = "*"
-djangorestframework = "*"
-djangorestframework-simplejwt = "*"
-drf-spectacular = "*"
 psycopg2-binary = "*"
-celery = "*"
-redis = "*"
-channels = "*"
-channels-redis = "*"
 scikit-learn = "*"
 scipy = "*"
 numpy = "*"
 python-dateutil = "*"
 joblib = "*"
-django-celery-beat = "*"
-httpx = "^0.28.1"
-django-split-settings = "*"
-python-json-logger = "*"
-daphne = "^4.2.1"
-pytest-asyncio = "^1.2.0"
 python-dotenv = "^1.2.1"
+redis = "^7.0.0"
+celery = "^5.5.3"
+uvicorn = "^0.38.0"
+fastapi = "^0.120.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
@@ -35,14 +25,6 @@ pytest-django = "*"
 autoflake = "*"
 isort = "*"
 ruff = "*"
-
-[tool.pytest.ini_options]
-DJANGO_SETTINGS_MODULE = "config.settings"
-python_files = [
-    "tests.py",
-    "test_*.py",
-    "*_test.py"
-]
 
 [build-system]
 requires = ["poetry-core>=1.6.0"]

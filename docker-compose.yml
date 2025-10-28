@@ -1,117 +1,43 @@
 version: "3.9"
 
 services:
-  backend:
-    build: .
-    container_name: django_app
-    command: >
-      bash -c "
-      python manage.py migrate --noinput &&
-      python manage.py collectstatic --noinput &&
-      gunicorn config.wsgi:application --bind 0.0.0.0:8000
-      "
-    volumes:
-      - .:/app
-    ports:
-      - "8000:8000"
-    depends_on:
-      - postgres
-      - redis
-    env_file:
-      - .env
-
-  websocket:
-    build: .
-    container_name: django_channels
-    command: ["daphne", "-b", "0.0.0.0", "-p", "8080", "config.asgi:application"]
-    volumes:
-      - .:/app
-    ports:
-      - "8080:8080"
-    depends_on:
-      - backend
-      - redis
-    env_file:
-      - .env
-
-  celery:
-    build: .
-    container_name: celery_worker
-    command: ["celery", "-A", "config", "worker", "--loglevel=info"]
-    volumes:
-      - .:/app
-    depends_on:
-      - backend
-      - redis
-      - postgres
-    env_file:
-      - .env
-
-  celery_beat:
-    build: .
-    container_name: celery_beat
-    command: ["celery", "-A", "config", "beat", "--loglevel=info"]
-    volumes:
-      - .:/app
-    depends_on:
-      - backend
-      - redis
-      - postgres
-    env_file:
-      - .env
-
-  flower:
-    image: mher/flower:latest
-    entrypoint: ["python", "-m", "flower"]
-    command: >
-      --broker=redis://${REDIS_USER}:${REDIS_PASSWORD}@redis:6379/${REDIS_DB} --port=5555
-    ports:
-      - "5555:5555"
-    depends_on:
-      - redis
-    env_file:
-      - .env
-
-  redis:
+  cs2_redis:
     image: redis:7
-    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
+    container_name: cs2_redis
+    env_file:
+      - .env
     ports:
       - "${REDIS_PORT}:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 5s
-    env_file:
-      - .env
 
-  postgres:
-    image: postgres:15
-    ports:
-      - "${POSTGRES_PORT}:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
-    env_file:
-      - .env  
+  # cs2_celery_worker:
+  #   build:
+  #     context: .
+  #     dockerfile: worker/Dockerfile
+  #   container_name: celery_worker
+  #   env_file:
+  #     - .env
+  #   depends_on:
+  #     cs2_redis:
+  #       condition: service_healthy
+  #   volumes:
+  #     - ./data:/app/data
 
-  fluentd:
-    image: fluent/fluentd:v1.16-1
-    container_name: fluentd
-    ports:
-      - "9880:9880"
-    volumes:
-      - ./fluentd/conf:/fluentd/etc
-      - ./fluentd/log:/fluentd/log
-    command: ["fluentd", "-c", "/fluentd/etc/fluent.conf", "-v"]
-    env_file:
-      - .env
-
-volumes:
-  postgres_data:
+  # cs2_fastapi:
+  #   build:
+  #     context: .
+  #     dockerfile: forecaster/Dockerfile  # Your FastAPI Dockerfile path
+  #   container_name: fastapi_app
+  #   env_file:
+  #     - .env
+  #   depends_on:
+  #     cs2_redis:
+  #       condition: service_healthy
+  #   ports:
+  #     - "8000:8000"
+    
