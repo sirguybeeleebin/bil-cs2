@@ -18,7 +18,7 @@ prune:
 	docker container prune -f
 	docker volume prune -f	
 	docker volume rm bil-cs2_postgres_data
+	docker volume rm bil-cs2_mongo_data
 
 up:
 	docker compose up --build
-

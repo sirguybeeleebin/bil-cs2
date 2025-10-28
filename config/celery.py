@@ -1,84 +1,85 @@
-import logging
+from __future__ import absolute_import, unicode_literals
+
+import json
 import os
 
-# ruff: noqa: E402
+from celery import Celery, chain
+
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 
-import django  # noqa: E402
+app = Celery("config")
+app.config_from_object("django.conf:settings", namespace="CELERY")
+app.autodiscover_tasks()
 
-django.setup()  # noqa: E402
 
-from celery import Celery
-from celery.schedules import crontab
-from celery.signals import worker_ready
+@app.on_after_finalize.connect
+def setup_tasks(sender, **kwargs):
+    from django_celery_beat.models import IntervalSchedule, PeriodicTask
 
-log = logging.getLogger(__name__)
+    from backend.di import (
+        map_repo,
+        ml_result_metrics_repo,
+        ml_result_repo,
+        player_repo,
+        team_repo,
+    )
+    from backend.tasks import (
+        make_load_dictionaries_task,
+        make_train_model_task,
+        make_update_dictionaries_task,
+    )
+    from train_model.train_model import train_model
+    from update_dictionaries.update_dictionaries import update_dictionaries
 
-celery = Celery("config")
-celery.config_from_object("django.conf:settings", namespace="CELERY")
-celery.autodiscover_tasks()
-celery.conf.timezone = "UTC"
+    # --- Создание задач через фабрики ---
+    update_dicts_task = make_update_dictionaries_task(
+        update_dictionaries_func=update_dictionaries
+    )
+    load_dicts_task = make_load_dictionaries_task(
+        map_repository=map_repo,
+        team_repository=team_repo,
+        player_repository=player_repo,
+    )
+    train_model_task = make_train_model_task(
+        train_model_func=train_model,
+        ml_result_repository=ml_result_repo,
+        ml_result_metrics_repository=ml_result_metrics_repo,
+    )
 
-# ruff: noqa: E402
-from app.ml.train_model import train_model
-from app.repositories.map import make_map_repository
-from app.repositories.ml_pipeline import make_ml_pipeline_repository
-from app.repositories.ml_pipeline_metrics import make_ml_pipeline_metrics_repository
-from app.repositories.player import make_player_repository
-from app.repositories.team import make_team_repository
-from app.tasks.fill_dictionaries import make_fill_dictionaries_task
-from app.tasks.ml_pipeline import make_ml_pipeline_task
-from config.settings import ML_PIPELINE_SETTINGS, PATH_TO_GAMES_RAW_DIR
+    # --- Цепочка обновления и загрузки словарей ---
+    @app.task(name="backend.tasks.chain_update_and_load")
+    def chain_update_and_load_task():
+        return chain(update_dicts_task.s(), load_dicts_task.s()).apply_async()
 
-map_repository = make_map_repository()
-team_repository = make_team_repository()
-player_repository = make_player_repository()
-ml_pipeline_repository = make_ml_pipeline_repository()
-ml_pipeline_metrics_repository = make_ml_pipeline_metrics_repository()
+    # --- Регистрируем расписания в БД ---
+    hourly, _ = IntervalSchedule.objects.get_or_create(
+        every=3600,
+        period=IntervalSchedule.SECONDS,
+    )
+    daily, _ = IntervalSchedule.objects.get_or_create(
+        every=86400,
+        period=IntervalSchedule.SECONDS,
+    )
 
-fill_dictionaries_task = make_fill_dictionaries_task(
-    map_repository=map_repository,
-    team_repository=team_repository,
-    player_repository=player_repository,
-)
-
-ml_pipeline_task = make_ml_pipeline_task(
-    ml_pipeline_repository=ml_pipeline_repository,
-    ml_pipeline_metrics_repository=ml_pipeline_metrics_repository,
-    train_model_fn=train_model,
-)
-
-celery.conf.beat_schedule = {
-    "fill-dictionaries-every-hour": {
-        "task": fill_dictionaries_task.name,
-        "schedule": 3600.0,
-        "args": [str(PATH_TO_GAMES_RAW_DIR)],
-    },
-    "run-ml-pipeline-daily": {
-        "task": ml_pipeline_task.name,
-        "schedule": crontab(minute=0, hour=0),
-        "kwargs": {
-            "path_to_games_raw_dir": str(PATH_TO_GAMES_RAW_DIR),
-            "test_size": ML_PIPELINE_SETTINGS["TEST_SIZE"],
-            "n_splits": ML_PIPELINE_SETTINGS["N_SPLITS"],
-            "n_iters": ML_PIPELINE_SETTINGS["N_ITERS"],
-            "random_state": ML_PIPELINE_SETTINGS["RANDOM_STATE"],
+    # --- Добавляем/обновляем задачи в Django admin ---
+    PeriodicTask.objects.update_or_create(
+        name="update-dictionaries-every-hour",
+        defaults={
+            "task": "backend.tasks.chain_update_and_load",
+            "interval": hourly,
+            "args": json.dumps([]),
         },
-    },
-}
+    )
 
-
-@worker_ready.connect
-def at_start(sender=None, **kwargs):
-    log.info("Worker ready — запуск стартовых задач")
-    fill_dictionaries_task.delay(str(PATH_TO_GAMES_RAW_DIR))
-    ml_pipeline_task.delay(
-        path_to_games_raw_dir=str(PATH_TO_GAMES_RAW_DIR),
-        test_size=ML_PIPELINE_SETTINGS["TEST_SIZE"],
-        n_splits=ML_PIPELINE_SETTINGS["N_SPLITS"],
-        n_iters=ML_PIPELINE_SETTINGS["N_ITERS"],
-        random_state=ML_PIPELINE_SETTINGS["RANDOM_STATE"],
+    PeriodicTask.objects.update_or_create(
+        name="train-model-daily-midnight",
+        defaults={
+            "task": train_model_task.name,
+            "interval": daily,
+            "args": json.dumps([]),
+        },
     )
 
 
-__all__ = ("celery",)
+if os.environ.get("RUN_MAIN") is None and os.environ.get("CELERY_WORKER") == "1":
+    setup_tasks()
