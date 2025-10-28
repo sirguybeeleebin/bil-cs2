@@ -2,7 +2,9 @@ import json
 import logging
 import os
 import uuid
+from pathlib import Path
 from typing import Callable, Optional
+from uuid import UUID
 
 import joblib
 from celery import shared_task
@@ -15,7 +17,13 @@ from backend.di import (
     player_repo,
     team_repo,
 )
-from backend.repositories import MapRepository, PlayerRepository, TeamRepository
+from backend.repositories import (
+    MapRepository,
+    MLPipelineMetricRepository,
+    MLPipelineRepository,
+    PlayerRepository,
+    TeamRepository,
+)
 
 log = logging.getLogger(__name__)
 
@@ -26,8 +34,9 @@ def make_update_dictionaries_task(
     maps_dir: str = settings.MAPS_DIR,
     teams_dir: str = settings.TEAMS_DIR,
     players_dir: str = settings.PLAYERS_DIR,
+    task_name: str = "backend.tasks.update_dictionaries_task",
 ) -> Callable[..., None]:
-    @shared_task(name="backend.tasks.update_dictionaries_task")
+    @shared_task(name=task_name)
     def task(*args, **kwargs) -> None:
         log.info("Запуск задачи обновления словарей...")
         update_dictionaries_func(
@@ -48,24 +57,46 @@ def make_load_dictionaries_task(
     map_repository: MapRepository = map_repo,
     team_repository: TeamRepository = team_repo,
     player_repository: PlayerRepository = player_repo,
+    task_name: str = "backend.tasks.load_dictionaries_task",
 ) -> Callable[..., None]:
-    @shared_task(name="backend.tasks.load_dictionaries_task")
+    @shared_task(name=task_name)
     def task(*args, **kwargs) -> None:
         log.info("Запуск задачи загрузки словарей в БД...")
-        for directory, repo, entity_name in [
-            (maps_dir, map_repository, "карта"),
-            (teams_dir, team_repository, "команда"),
-            (players_dir, player_repository, "игрок"),
-        ]:
-            for filename in os.listdir(directory):
-                if filename.endswith(".json"):
-                    with open(
-                        os.path.join(directory, filename), "r", encoding="utf-8"
-                    ) as f:
-                        data = json.load(f)
-                    result = repo.upsert(data)
-                    if result:
-                        log.info(f"Создана/обновлена {entity_name}: {result['name']}")
+
+        for filename in os.listdir(maps_dir):
+            if filename.endswith(".json"):
+                with open(os.path.join(maps_dir, filename), "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                map_result = map_repository.upsert(
+                    map_id=data["map_id"], name=data["name"]
+                )
+                if map_result:
+                    log.info(f"Создана/обновлена карта: {map_result['name']}")
+
+        for filename in os.listdir(teams_dir):
+            if filename.endswith(".json"):
+                with open(
+                    os.path.join(teams_dir, filename), "r", encoding="utf-8"
+                ) as f:
+                    data = json.load(f)
+                team_result = team_repository.upsert(
+                    team_id=data["team_id"], name=data["name"]
+                )
+                if team_result:
+                    log.info(f"Создана/обновлена команда: {team_result['name']}")
+
+        for filename in os.listdir(players_dir):
+            if filename.endswith(".json"):
+                with open(
+                    os.path.join(players_dir, filename), "r", encoding="utf-8"
+                ) as f:
+                    data = json.load(f)
+                player_result = player_repository.upsert(
+                    player_id=data["player_id"], name=data["name"]
+                )
+                if player_result:
+                    log.info(f"Создан/обновлен игрок: {player_result['name']}")
+
         log.info("Загрузка словарей в БД завершена.")
 
     return task
@@ -78,10 +109,11 @@ def make_train_model_task(
     test_size: float = settings.TEST_SIZE,
     n_splits: int = settings.N_SPLITS,
     random_state: int = settings.RANDOM_STATE,
-    ml_result_repository=ml_result_repo,
-    ml_result_metrics_repository=ml_result_metrics_repo,
+    ml_pipeline_repository: MLPipelineRepository = ml_result_repo,
+    ml_pipeline_metrics_repository: MLPipelineMetricRepository = ml_result_metrics_repo,
+    task_name: str = "backend.tasks.train_model_task",
 ) -> Callable[..., dict]:
-    @shared_task(name="backend.tasks.train_model_task")
+    @shared_task(name=task_name)
     def task(*args, **kwargs) -> dict:
         try:
             log.info("Начало обучения ML модели...")
@@ -96,8 +128,8 @@ def make_train_model_task(
             os.makedirs(ml_results_dir, exist_ok=True)
             pipeline_id = str(uuid.uuid4())
 
-            pipeline_path = os.path.join(ml_results_dir, f"{pipeline_id}.joblib")
-            metrics_path = os.path.join(ml_results_dir, f"{pipeline_id}.json")
+            pipeline_path = Path(ml_results_dir) / f"{pipeline_id}.joblib"
+            metrics_path = Path(ml_results_dir) / f"{pipeline_id}.json"
 
             joblib.dump(ml_pipeline, pipeline_path)
             with open(metrics_path, "w", encoding="utf-8") as f:
@@ -106,16 +138,13 @@ def make_train_model_task(
             log.info(f"ML модель сохранена: {pipeline_path}")
             log.info(f"Метрики модели сохранены: {metrics_path}")
 
-            ml_result: Optional[dict] = ml_result_repository.upsert(
-                {
-                    "pipeline_file": os.path.relpath(pipeline_path, settings.BASE_DIR),
-                    "metrics_file": os.path.relpath(metrics_path, settings.BASE_DIR),
-                }
+            ml_result: Optional[dict] = ml_pipeline_repository.upsert(
+                pipeline_file=pipeline_path, metrics_file=metrics_path
             )
 
             if ml_result:
-                ml_result_metrics_repository.upsert(
-                    ml_result_id=ml_result["ml_result_id"],
+                ml_pipeline_metrics_repository.upsert(
+                    ml_pipeline_id=UUID(ml_result["ml_pipeline_id"]),
                     roc_auc=metrics["roc_auc"],
                     f1=metrics["f1"],
                     precision=metrics["precision"],
@@ -127,13 +156,13 @@ def make_train_model_task(
                     fn=metrics["fn"],
                 )
                 log.info(
-                    f"Метрики модели сохранены в БД для MLResult ID: {ml_result['ml_result_id']}"
+                    f"Метрики модели сохранены в БД для MLPipeline ID: {ml_result['ml_pipeline_id']}"
                 )
 
             return {
                 "pipeline_id": pipeline_id,
                 "metrics": metrics,
-                "db_id": ml_result["ml_result_id"] if ml_result else None,
+                "db_id": ml_result["ml_pipeline_id"] if ml_result else None,
             }
 
         except Exception as e:
