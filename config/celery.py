@@ -46,7 +46,10 @@ def setup_tasks(sender, **kwargs):
         train_model_func=train_model,
         ml_pipeline_repository=ml_result_repo,
         ml_pipeline_metrics_repository=ml_result_metrics_repo,
+<<<<<<< HEAD
         task_name="backend.tasks.train_model_task",
+=======
+>>>>>>> origin/main
     )
 
     # --- Цепочка обновления и загрузки словарей ---

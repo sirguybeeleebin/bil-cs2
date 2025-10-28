@@ -14,7 +14,10 @@ class Command(BaseCommand):
             train_model_func=train_model,
             ml_pipeline_repository=ml_result_repo,
             ml_pipeline_metrics_repository=ml_result_metrics_repo,
+<<<<<<< HEAD
             task_name="backend.tasks.train_model_task",
+=======
+>>>>>>> origin/main
         )
         result = task.apply_async()
         self.stdout.write(f"Запущена тренировка модели, task_id={result.id}")
