@@ -3,11 +3,12 @@ from django.urls import path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
-from backend.init_handlers import (
-    forecast_handler,
-    map_search_handler,
-    player_search_handler,
-    team_search_handler,
+from backend.handlers import (
+    ForecastHandler,
+    ForecastResultHandler,
+    MapSearchHandler,
+    PlayerSearchHandler,
+    TeamSearchHandler,
 )
 
 urlpatterns = [
@@ -20,8 +21,13 @@ urlpatterns = [
         SpectacularSwaggerView.as_view(url_name="schema"),
         name="swagger-ui",
     ),
-    path("api/v1/maps/", map_search_handler.as_view(), name="map-search"),
-    path("api/v1/teams/", team_search_handler.as_view(), name="team-search"),
-    path("api/v1/players/", player_search_handler.as_view(), name="player-search"),
-    path("api/v1/forecast/", forecast_handler.as_view(), name="forecast"),
+    path("api/v1/maps/", MapSearchHandler.as_view(), name="map-search"),
+    path("api/v1/teams/", TeamSearchHandler.as_view(), name="team-search"),
+    path("api/v1/players/", PlayerSearchHandler.as_view(), name="player-search"),
+    path("api/v1/forecast/", ForecastHandler.as_view(), name="forecast"),
+    path(
+        "api/v1/forecast/<str:task_id>/",
+        ForecastResultHandler.as_view(),
+        name="forecast-result",
+    ),
 ]

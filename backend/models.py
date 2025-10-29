@@ -31,17 +31,22 @@ class Player(models.Model):
 
 
 class MLPipeline(models.Model):
-    ml_pipeline_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    ml_pipeline_id = models.UUIDField(
+        primary_key=True, default=uuid.uuid4, editable=False
+    )
     created_at = models.DateTimeField(auto_now_add=True)
-    pipeline_file = models.FileField(upload_to="ml_results")
-    metrics_file = models.FileField(upload_to="ml_results")
+    pipeline_file_path = models.CharField(max_length=500)
+    metrics_file_path = models.CharField(max_length=500)
 
     def __str__(self):
         return f"MLPipeline {self.ml_pipeline_id}"
 
 
 class MLPipelineMetric(models.Model):
-    ml_pipeline = models.OneToOneField(
+    ml_pipeline_metric_id = models.UUIDField(
+        primary_key=True, default=uuid.uuid4, editable=False
+    )
+    ml_pipeline = models.ForeignKey(
         MLPipeline, on_delete=models.CASCADE, related_name="metrics"
     )
     roc_auc = models.FloatField()

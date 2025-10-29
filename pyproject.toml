@@ -34,6 +34,9 @@ django-telegrambot = "*"
 djangorestframework = "*"
 djangorestframework-simplejwt = "^5.5.1"
 drf-spectacular = "^0.28.0"
+pytest-django = "^4.11.1"
+aiohttp = "^3.13.2"
+pytest-aiohttp = "^1.1.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"

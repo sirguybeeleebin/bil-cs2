@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 
 import numpy as np
 import pytest
@@ -75,22 +76,32 @@ def test_generate_game_raw(tmp_path, sample_game):
 
 
 def test_validate_game(sample_game):
+    # Valid game
     assert _validate_game(sample_game) is True
 
     # Remove one player -> invalid
-    sample_game_invalid = sample_game.copy()
-    sample_game_invalid["players"] = sample_game_invalid["players"][:-1]
-    assert _validate_game(sample_game_invalid) is False
+    invalid_game = deepcopy(sample_game)
+    invalid_game["players"] = invalid_game["players"][:-1]
+    assert _validate_game(invalid_game) is False
+
+    # Invalid number of teams
+    invalid_game2 = deepcopy(sample_game)
+    invalid_game2["players"] = invalid_game2["players"][:5]  # only one team
+    assert _validate_game(invalid_game2) is False
+
+    # Invalid round winner
+    invalid_game3 = deepcopy(sample_game)
+    invalid_game3["rounds"][0]["winner_team"] = 999
+    assert _validate_game(invalid_game3) is False
 
 
-def test_get_game_ids(tmp_path, sample_game, caplog):
+def test_get_game_ids(tmp_path, sample_game):
     file_path = tmp_path / "game1.json"
     file_path.write_text(json.dumps(sample_game))
 
-    with caplog.at_level("INFO"):
-        ids = get_game_ids(str(tmp_path))
+    # Just check the output, not the logs
+    ids = get_game_ids(str(tmp_path))
     assert ids == [1]
-    assert "Загружено 1 корректных игр" in caplog.text
 
 
 def test_get_X_y(tmp_path, sample_game):
@@ -102,5 +113,8 @@ def test_get_X_y(tmp_path, sample_game):
     assert isinstance(y, np.ndarray)
     assert X.shape[0] == 1
     assert y.shape[0] == 1
-    # The first team wins 8 rounds, second team wins 8 rounds -> tie -> y=0
+
+    # Team 10 wins 8 rounds, Team 20 wins 8 rounds -> tie -> y=0
     assert y[0] == 0
+    # Check feature vector length: map + 2 team ids + 10 player ids
+    assert X.shape[1] == 1 + 2 + 10

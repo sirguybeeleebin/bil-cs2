@@ -4,7 +4,7 @@ import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import TimeSeriesSplit, cross_val_score
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("train_model")
 logging.basicConfig(level=logging.INFO)
 
 
