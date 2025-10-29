@@ -1,7 +1,8 @@
 import logging
 
 from celery.result import AsyncResult
-from rest_framework import permissions, serializers, status
+from django.contrib.auth.models import User
+from rest_framework import generics, permissions, serializers, status
 from rest_framework.response import Response
 from rest_framework.views import APIView, Request
 
@@ -9,6 +10,27 @@ from backend.di import map_repo, player_repo, team_repo
 from backend.tasks import ml_forecast_inference_task
 
 log = logging.getLogger(__name__)
+
+
+class RegisterSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True)
+
+    class Meta:
+        model = User
+        fields = ("username", "password", "email")
+
+    def create(self, validated_data):
+        user = User.objects.create_user(
+            username=validated_data["username"],
+            password=validated_data["password"],
+            email=validated_data.get("email", ""),
+        )
+        return user
+
+
+class RegisterHandler(generics.CreateAPIView):
+    queryset = User.objects.all()
+    serializer_class = RegisterSerializer
 
 
 class MapSearchHandler(APIView):

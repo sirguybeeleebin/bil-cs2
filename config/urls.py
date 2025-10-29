@@ -8,18 +8,22 @@ from backend.handlers import (
     ForecastResultHandler,
     MapSearchHandler,
     PlayerSearchHandler,
+    RegisterHandler,
     TeamSearchHandler,
 )
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path("api/v1/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
-    path("api/v1/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("api/v1/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(
         "api/v1/docs/",
         SpectacularSwaggerView.as_view(url_name="schema"),
         name="swagger-ui",
+    ),
+    path("api/v1/auth/register/", RegisterHandler.as_view(), name="register"),
+    path("api/v1/auth/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
+    path(
+        "api/v1/auth/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"
     ),
     path("api/v1/maps/", MapSearchHandler.as_view(), name="map-search"),
     path("api/v1/teams/", TeamSearchHandler.as_view(), name="team-search"),

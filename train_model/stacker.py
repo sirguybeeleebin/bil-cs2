@@ -131,7 +131,6 @@ class Stacker:
             meta_features.append(avg_preds)
         X_meta_test = np.column_stack(meta_features)
 
-        # Применяем отбор мета-признаков при предсказании
         if self.meta_feature_selector is not None:
             X_meta_test = self.meta_feature_selector.transform(X_meta_test)
 
