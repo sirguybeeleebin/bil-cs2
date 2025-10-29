@@ -1,78 +1,95 @@
 import asyncio
+import logging
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.fsm.storage.memory import MemoryStorage
 
-from telegram_bot.config import API_BASE_URL, BOT_TOKEN
-from telegram_bot.cs2_api_client import CS2ApiClient
-from telegram_bot.handlers import map_handlers, player_handlers, team_handlers
-from telegram_bot.states import PredictionStates
+from telegram_bot.config import get_config
+from telegram_bot.handlers.auth import password_handler, start, username_handler
+from telegram_bot.handlers.maps import on_map_selected, on_map_text
+from telegram_bot.handlers.players import on_player_selected, on_player_text
+from telegram_bot.handlers.teams import on_team_selected, on_team_text
+
+# ------------------------------
+# Настройка логирования
+# ------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%d-%m-%Y %H:%M:%S",
+)
+log = logging.getLogger(__name__)
 
 
+# ------------------------------
+# Основная функция бота
+# ------------------------------
 async def main():
-    bot = Bot(token=BOT_TOKEN)
-    dp = Dispatcher()
+    log.info("Загрузка конфигурации...")
+    config = get_config()
 
-    # --- Инициализация клиента для работы с API ---
-    api_client = CS2ApiClient(base_url=API_BASE_URL)
+    bot = Bot(token=config["BOT_TOKEN"])
+    dp = Dispatcher(storage=MemoryStorage())
 
-    # --- Map Handlers ---
-    dp.message.register(map_handlers.start, F.text == "/start")
+    log.info("Регистрация обработчиков...")
+
+    # --- Auth ---
+    dp.message.register(start, F.text == "/start")
     dp.message.register(
-        map_handlers.on_map_text, PredictionStates.choosing_map, api_client=api_client
+        username_handler, state=F.state == "PredictionStates:waiting_username"
+    )
+    dp.message.register(
+        lambda msg, state: password_handler(msg, state, config["API_BASE_URL"]),
+        state=F.state == "PredictionStates:waiting_password",
+    )
+
+    # --- Map ---
+    dp.message.register(
+        lambda msg, state: on_map_text(msg, state, config["API_BASE_URL"]),
+        state=F.state == "PredictionStates:choosing_map",
+    )
+    dp.callback_query.register(on_map_selected, F.data.startswith("maps:"))
+
+    # --- Teams ---
+    dp.message.register(
+        lambda msg, state: on_team_text(msg, state, config["API_BASE_URL"], 1),
+        state=F.state == "PredictionStates:choosing_team1",
     )
     dp.callback_query.register(
-        map_handlers.on_map_selected, F.data.startswith("maps:"), api_client=api_client
+        lambda cb, state: on_team_selected(cb, state, 1), F.data.startswith("team1:")
     )
-
-    # --- Team Handlers ---
     dp.message.register(
-        team_handlers.on_team1_text,
-        PredictionStates.choosing_team1,
-        api_client=api_client,
+        lambda msg, state: on_team_text(msg, state, config["API_BASE_URL"], 2),
+        state=F.state == "PredictionStates:choosing_team2",
     )
     dp.callback_query.register(
-        team_handlers.on_team1_selected,
-        F.data.startswith("team1:"),
-        api_client=api_client,
+        lambda cb, state: on_team_selected(cb, state, 2), F.data.startswith("team2:")
     )
 
+    # --- Players ---
     dp.message.register(
-        team_handlers.on_team2_text,
-        PredictionStates.choosing_team2,
-        api_client=api_client,
+        lambda msg, state: on_player_text(msg, state, config["API_BASE_URL"], 1),
+        state=F.state == "PredictionStates:choosing_players_team1",
     )
     dp.callback_query.register(
-        team_handlers.on_team2_selected,
-        F.data.startswith("team2:"),
-        api_client=api_client,
-    )
-
-    # --- Player Handlers ---
-    dp.message.register(
-        player_handlers.on_player1_text,
-        PredictionStates.choosing_players_team1,
-        api_client=api_client,
-    )
-    dp.callback_query.register(
-        player_handlers.on_player1_selected,
+        lambda cb, state: on_player_selected(cb, state, config["API_BASE_URL"], 1),
         F.data.startswith("player1:"),
-        api_client=api_client,
     )
-
     dp.message.register(
-        player_handlers.on_player2_text,
-        PredictionStates.choosing_players_team2,
-        api_client=api_client,
+        lambda msg, state: on_player_text(msg, state, config["API_BASE_URL"], 2),
+        state=F.state == "PredictionStates:choosing_players_team2",
     )
     dp.callback_query.register(
-        player_handlers.on_player2_selected,
+        lambda cb, state: on_player_selected(cb, state, config["API_BASE_URL"], 2),
         F.data.startswith("player2:"),
-        api_client=api_client,
     )
 
-    print("🤖 Bot started")
+    log.info("🤖 Бот запущен и готов к работе.")
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        log.exception(f"Произошла ошибка при запуске бота: {e}")
