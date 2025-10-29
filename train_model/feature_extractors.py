@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections import Counter
 
 import numpy as np
 from scipy.sparse import csr_matrix, lil_matrix
 from sklearn.base import BaseEstimator, TransformerMixin
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("train_model")
 logging.basicConfig(level=logging.INFO)
 
 
@@ -289,4 +290,189 @@ class PlayerMapStatisticSumExtractor(BaseEstimator, TransformerMixin):
         for i in range(5):
             for j in range(5):
                 features.append(left_sorted[i] - right_sorted[j])
+        return np.array(features, dtype=float)
+
+
+class PlayerRoundWinSumExtractor(BaseEstimator, TransformerMixin):
+    def __init__(
+        self,
+        game_ids: list[int],
+        path_to_dir: str = "data/games_raw",
+    ) -> None:
+        self.game_ids: list[int] = game_ids
+        self.path_to_dir: str = path_to_dir
+        self.player_round_dict: dict[int, float] = {}
+
+    def fit(self, X: np.ndarray, y=None) -> "PlayerRoundWinSumExtractor":
+        X_out: list[list[float]] = []
+        total = X.shape[0]
+
+        for row_idx, row in enumerate(X):
+            X_out.append([self.player_round_dict.get(pid, 0.0) for pid in row])
+
+            if row_idx < len(self.game_ids):
+                game_id = self.game_ids[row_idx]
+                try:
+                    with open(
+                        os.path.join(self.path_to_dir, f"{game_id}.json"),
+                        "r",
+                        encoding="utf-8",
+                    ) as f:
+                        game = json.load(f)
+
+                    team_players = {
+                        p["player"]["id"]: p["team"]["id"] for p in game["players"]
+                    }
+                    win_round_counts = Counter(r["winner_team"] for r in game["rounds"])
+
+                    for p_id in row:
+                        t_id = team_players[p_id]
+                        count = win_round_counts.get(t_id, 0)
+                        current = self.player_round_dict.get(p_id, 0.0)
+                        current += count  # <-- was incorrectly adding t_id
+                        self.player_round_dict[p_id] = current
+
+                    log.info(
+                        f"Игра {row_idx + 1}/{total}: обновлены статистики игроков для игры {game_id}"
+                    )
+                except Exception as e:
+                    log.error(
+                        f"PlayerRoundWinSumExtractor: ошибка чтения игры {game_id}: {e}"
+                    )
+
+        self.X_train_ = np.array(X_out, dtype=float)
+        log.info("PlayerRoundWinSumExtractor: обучение завершено")
+        return self
+
+    def transform(self, X: np.ndarray, y=None) -> np.ndarray:
+        X_out: list[np.ndarray] = []
+
+        for row in X:
+            stats = [self.player_round_dict.get(pid, 0.0) for pid in row]
+            X_out.append(self._augment(np.array(stats, dtype=float)))
+
+        log.info(
+            f"PlayerRoundWinSumExtractor: трансформация массива размером {X.shape}"
+        )
+        return np.array(X_out, dtype=float)
+
+    def _augment(self, row: np.ndarray) -> np.ndarray:
+        left_team, right_team = row[:5], row[5:]
+        left_sorted, right_sorted = np.sort(left_team), np.sort(right_team)
+        mean_left, mean_right = np.mean(left_sorted), np.mean(right_sorted)
+
+        features: list[float] = [
+            *left_sorted,
+            *right_sorted,
+            mean_left,
+            mean_right,
+            mean_left - mean_right,
+        ]
+
+        for i in range(5):
+            for j in range(5):
+                features.append(left_sorted[i] - right_sorted[j])
+
+        return np.array(features, dtype=float)
+
+
+class PlayerRoundWinMapSumExtractor(BaseEstimator, TransformerMixin):
+    def __init__(
+        self,
+        game_ids: list[int],
+        path_to_dir: str = "data/games_raw",
+    ) -> None:
+        self.game_ids: list[int] = game_ids
+        self.path_to_dir: str = path_to_dir
+        self.player_round_dict: dict[int, dict[int, float]] = {}
+
+    def fit(self, X: np.ndarray, y=None) -> "PlayerRoundWinMapSumExtractor":
+        X_out: list[list[float]] = []
+        total = X.shape[0]
+        log.info(f"PlayerRoundWinMapSumExtractor: обучение на {total} матчах")
+
+        for row_idx, row in enumerate(X):
+            map_id = row[0]
+            player_ids = row[1:]
+            X_out.append(
+                [
+                    self.player_round_dict.get(map_id, {}).get(pid, 0.0)
+                    for pid in player_ids
+                ]
+            )
+
+            if row_idx < len(self.game_ids):
+                game_id = self.game_ids[row_idx]
+                try:
+                    with open(
+                        os.path.join(self.path_to_dir, f"{game_id}.json"),
+                        "r",
+                        encoding="utf-8",
+                    ) as f:
+                        game = json.load(f)
+
+                    map_id_game = game["map"]["id"]
+                    if map_id_game not in self.player_round_dict:
+                        self.player_round_dict[map_id_game] = {}
+
+                    team_players = {
+                        p["player"]["id"]: p["team"]["id"] for p in game["players"]
+                    }
+                    win_round_counts = Counter(r["winner_team"] for r in game["rounds"])
+
+                    for p_id in player_ids:
+                        t_id = team_players[p_id]
+                        count = win_round_counts.get(t_id, 0)
+                        current = self.player_round_dict[map_id_game].get(p_id, 0.0)
+                        current += count
+                        self.player_round_dict[map_id_game][p_id] = current
+
+                    log.info(
+                        f"Игра {row_idx + 1}/{total}: обновлены статистики игроков для игры {game_id} на карте {map_id_game}"
+                    )
+                except Exception as e:
+                    log.error(
+                        f"PlayerRoundWinMapSumExtractor: ошибка чтения игры {game_id}: {e}"
+                    )
+
+        self.X_train_ = np.array(X_out, dtype=float)
+        log.info("PlayerRoundWinMapSumExtractor: обучение завершено")
+        return self
+
+    def transform(self, X: np.ndarray, y=None) -> np.ndarray:
+        X_out: list[np.ndarray] = []
+
+        for row in X:
+            map_id = row[0]
+            player_ids = row[1:]
+            if map_id in self.player_round_dict:
+                stats = [
+                    self.player_round_dict[map_id].get(pid, 0.0) for pid in player_ids
+                ]
+            else:
+                stats = [0.0 for _ in player_ids]
+            X_out.append(self._augment(np.array(stats, dtype=float)))
+
+        log.info(
+            f"PlayerRoundWinMapSumExtractor: трансформация массива размером {X.shape}"
+        )
+        return np.array(X_out, dtype=float)
+
+    def _augment(self, row: np.ndarray) -> np.ndarray:
+        left_team, right_team = row[:5], row[5:]
+        left_sorted, right_sorted = np.sort(left_team), np.sort(right_team)
+        mean_left, mean_right = np.mean(left_sorted), np.mean(right_sorted)
+
+        features: list[float] = [
+            *left_sorted,
+            *right_sorted,
+            mean_left,
+            mean_right,
+            mean_left - mean_right,
+        ]
+
+        for i in range(5):
+            for j in range(5):
+                features.append(left_sorted[i] - right_sorted[j])
+
         return np.array(features, dtype=float)

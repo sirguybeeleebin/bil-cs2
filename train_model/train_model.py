@@ -1,3 +1,4 @@
+import json
 import logging
 
 from sklearn.pipeline import Pipeline
@@ -9,6 +10,8 @@ from train_model.feature_extractors import (
     ColumnSelectorArray,
     PlayerEloEncoder,
     PlayerMapStatisticSumExtractor,
+    PlayerRoundWinMapSumExtractor,
+    PlayerRoundWinSumExtractor,
     PlayerStatisticSumExtractor,
 )
 from train_model.feature_selectors import LogitL1FeatureSelector
@@ -18,7 +21,7 @@ from train_model.stacker import OOFPredictor, Stacker
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
-log = logging.getLogger(__name__)
+log = logging.getLogger("train_model")
 
 
 def train_model(
@@ -43,7 +46,6 @@ def train_model(
     player_cols = list(range(3, 13))
     player_stats_keys = ["kills", "deaths", "assists", "flash_assists", "headshots"]
 
-    # Pipelines
     map_pipeline = (
         "map_features",
         Pipeline(
@@ -55,8 +57,8 @@ def train_model(
         ),
     )
 
-    team_pipeline = (
-        "team_features",
+    team_bag_pipeline = (
+        "team_bag_features",
         Pipeline(
             [
                 ("select", ColumnSelectorArray(team_cols)),
@@ -66,8 +68,8 @@ def train_model(
         ),
     )
 
-    player_pipeline = (
-        "player_features",
+    player_bag_pipeline = (
+        "player_bag_features",
         Pipeline(
             [
                 ("select", ColumnSelectorArray(player_cols)),
@@ -127,31 +129,59 @@ def train_model(
         for key in player_stats_keys
     ]
 
-    all_pipelines = [
-        map_pipeline,
-        team_pipeline,
-        player_pipeline,
-        player_elo_pipeline,
-        *player_stats_pipelines,
-        *player_map_stats_pipelines,
-    ]
+    player_round_win_pipeline = (
+        "player_round_win",
+        Pipeline(
+            [
+                ("select", ColumnSelectorArray(player_cols)),
+                ("stat", PlayerRoundWinSumExtractor(game_ids=game_ids_train)),
+                ("scale", MinMaxScaler()),
+                ("l1_select", LogitL1FeatureSelector()),
+            ]
+        ),
+    )
 
-    # Stacker pipeline
-    ml_pipeline = Stacker(
+    player_round_map_win_pipeline = (
+        "player_round_map_win",
+        Pipeline(
+            [
+                ("select", ColumnSelectorArray(map_col + player_cols)),
+                ("stat", PlayerRoundWinMapSumExtractor(game_ids=game_ids_train)),
+                ("scale", MinMaxScaler()),
+                ("l1_select", LogitL1FeatureSelector()),
+            ]
+        ),
+    )
+
+    all_pipelines = [map_pipeline]
+    all_pipelines += [team_bag_pipeline]
+    all_pipelines += [player_bag_pipeline]
+    all_pipelines += [player_elo_pipeline]
+    all_pipelines += player_stats_pipelines
+    all_pipelines += player_map_stats_pipelines
+    all_pipelines += [player_round_win_pipeline]
+    all_pipelines += [player_round_map_win_pipeline]
+
+    stacker = Stacker(
         all_pipelines,
         oof_predictor=OOFPredictor(n_splits=n_splits, random_state=random_state),
+        meta_feature_selector=LogitL1FeatureSelector(),
         random_state=random_state,
     )
 
-    # Train model
     log.info("Обучение модели...")
-    ml_pipeline.fit(X_train, y_train)
+    stacker.fit(X_train, y_train)
 
-    # Predict and evaluate
     log.info("Предсказание на тесте...")
-    y_pred_test_proba = ml_pipeline.predict_proba(X_test)
+    y_pred_test_proba = stacker.predict_proba(X_test)
     metrics = get_metrics(y_test, y_pred_test_proba)
-    log.info("Метрики модели:\n%s", metrics)
+    log.info("Метрики модели:\n%s", json.dumps(metrics, indent=4, ensure_ascii=False))
+
+    final_coefs = stacker.get_final_coefs()
+    log.info(
+        "Коэффициенты финальной модели:\n%s",
+        json.dumps(final_coefs, indent=4, ensure_ascii=False),
+    )
 
     log.info("Обучение завершено успешно")
-    return ml_pipeline, metrics
+    return stacker, metrics

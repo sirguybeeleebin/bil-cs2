@@ -1,61 +1,85 @@
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional, Union
 from uuid import UUID
 
 from backend.models import Map, MLPipeline, MLPipelineMetric, Player, Team
 
 
-def to_dict(obj: Union[Map, Team, Player, MLPipeline, MLPipelineMetric]) -> dict:
-    """Преобразует объект Django в dict, исключая _state."""
-    d = obj.__dict__.copy()
-    d.pop("_state", None)
-    for k, v in d.items():
-        if isinstance(v, UUID):
-            d[k] = str(v)
-        elif isinstance(v, Path):
-            d[k] = str(v)
-    return d
-
-
 class MapRepository:
-    def upsert(self, map_id: int, name: str) -> Optional[dict]:
-        now: datetime = datetime.now(timezone.utc)
-        obj, created = Map.objects.update_or_create(
-            map_id=map_id, defaults={"name": name, "updated_at": now}
+    def upsert(self, map_id: int, name: str) -> dict:
+        now = datetime.now(timezone.utc)
+        obj, _ = Map.objects.update_or_create(
+            map_id=map_id,
+            defaults={"name": name, "updated_at": now},
         )
-        return to_dict(obj) if created else None
+        return obj.__dict__
+
+    def search_by_name(self, name: str, limit: int = 10, offset: int = 0) -> list[dict]:
+        queryset = Map.objects.filter(name__icontains=name)
+        paginated_qs = queryset[offset : offset + limit]
+        return [obj.__dict__ for obj in paginated_qs]
 
 
 class TeamRepository:
-    def upsert(self, team_id: int, name: str) -> Optional[dict]:
-        now: datetime = datetime.now(timezone.utc)
-        obj, created = Team.objects.update_or_create(
-            team_id=team_id, defaults={"name": name, "updated_at": now}
+    def upsert(self, team_id: int, name: str) -> dict:
+        now = datetime.now(timezone.utc)
+        obj, _ = Team.objects.update_or_create(
+            team_id=team_id,
+            defaults={"name": name, "updated_at": now},
         )
-        return to_dict(obj) if created else None
+        return obj.__dict__
+
+    def search_by_name(self, name: str, limit: int = 10, offset: int = 0) -> list[dict]:
+        queryset = Team.objects.filter(name__icontains=name)
+        paginated_qs = queryset[offset : offset + limit]
+        return [obj.__dict__ for obj in paginated_qs]
 
 
 class PlayerRepository:
-    def upsert(self, player_id: int, name: str) -> Optional[dict]:
-        now: datetime = datetime.now(timezone.utc)
-        obj, created = Player.objects.update_or_create(
-            player_id=player_id, defaults={"name": name, "updated_at": now}
+    def upsert(self, player_id: int, name: str) -> dict:
+        now = datetime.now(timezone.utc)
+        obj, _ = Player.objects.update_or_create(
+            player_id=player_id,
+            defaults={"name": name, "updated_at": now},
         )
-        return to_dict(obj) if created else None
+        return obj.__dict__
+
+    def search_by_name(self, name: str, limit: int = 10, offset: int = 0) -> list[dict]:
+        queryset = Player.objects.filter(name__icontains=name)
+        paginated_qs = queryset[offset : offset + limit]
+        return [obj.__dict__ for obj in paginated_qs]
 
 
 class MLPipelineRepository:
-    def upsert(self, pipeline_file: Path, metrics_file: Path) -> Optional[dict]:
-        obj, created = MLPipeline.objects.update_or_create(
-            pipeline_file=pipeline_file, defaults={"metrics_file": metrics_file}
+    def upsert(
+        self,
+        ml_pipeline_id: UUID,
+        pipeline_file_path: str,
+        metrics_file_path: str,
+    ) -> dict:
+        obj, _ = MLPipeline.objects.update_or_create(
+            ml_pipeline_id=ml_pipeline_id,
+            defaults={
+                "pipeline_file_path": pipeline_file_path,
+                "metrics_file_path": metrics_file_path,
+            },
         )
-        return to_dict(obj) if created else None
+        return obj.__dict__
+
+    def search_by_file(
+        self, pipeline_file_path: str = None, metrics_file_path: str = None
+    ) -> list[dict]:
+        queryset = MLPipeline.objects.all()
+        if pipeline_file_path:
+            queryset = queryset.filter(pipeline_file_path__icontains=pipeline_file_path)
+        if metrics_file_path:
+            queryset = queryset.filter(metrics_file_path__icontains=metrics_file_path)
+        return [obj.__dict__ for obj in queryset]
 
 
 class MLPipelineMetricRepository:
     def upsert(
         self,
+        ml_pipeline_metric_id: UUID,
         ml_pipeline_id: UUID,
         roc_auc: float,
         f1: float,
@@ -66,11 +90,12 @@ class MLPipelineMetricRepository:
         tn: int,
         fp: int,
         fn: int,
-    ) -> Optional[dict]:
-        ml_pipeline: MLPipeline = MLPipeline.objects.get(ml_pipeline_id=ml_pipeline_id)
-        obj, created = MLPipelineMetric.objects.update_or_create(
-            ml_pipeline=ml_pipeline,
+    ) -> dict:
+        ml_pipeline = MLPipeline.objects.get(ml_pipeline_id=ml_pipeline_id)
+        obj, _ = MLPipelineMetric.objects.update_or_create(
+            ml_pipeline_metric_id=ml_pipeline_metric_id,
             defaults={
+                "ml_pipeline": ml_pipeline,
                 "roc_auc": roc_auc,
                 "f1": f1,
                 "precision": precision,
@@ -82,4 +107,4 @@ class MLPipelineMetricRepository:
                 "fn": fn,
             },
         )
-        return to_dict(obj) if created else None
+        return obj.__dict__

@@ -11,8 +11,8 @@ lint:
 	poetry run ruff check $(SRC)
 	
 test:
-	poetry run pytest -v --disable-warnings -p no:cacheprovider --log-cli-level=INFO
-
+	DJANGO_SETTINGS_MODULE=config.settings poetry run pytest -v --disable-warnings -p no:cacheprovider --log-cli-level=INFO
+	
 prune:
 	docker compose stop
 	docker container prune -f

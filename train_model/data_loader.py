@@ -9,7 +9,7 @@ from typing import Any, Generator
 import numpy as np
 from dateutil.parser import parse
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("train_model")
 logging.basicConfig(level=logging.INFO)
 
 

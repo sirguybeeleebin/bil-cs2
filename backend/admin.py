@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Map, MLPipeline, MLPipelineMetric, Player, Team
+from backend.models import Map, MLPipeline, MLPipelineMetric, Player, Team
 
 
 @admin.register(Map)
@@ -43,7 +43,12 @@ class MLPipelineMetricInline(admin.StackedInline):
 
 @admin.register(MLPipeline)
 class MLPipelineAdmin(admin.ModelAdmin):
-    list_display = ("ml_pipeline_id", "created_at", "pipeline_file", "metrics_file")
+    list_display = (
+        "ml_pipeline_id",
+        "created_at",
+        "pipeline_file_path",
+        "metrics_file_path",
+    )
     readonly_fields = ("ml_pipeline_id", "created_at")
     ordering = ("-created_at",)
     inlines = [MLPipelineMetricInline]
