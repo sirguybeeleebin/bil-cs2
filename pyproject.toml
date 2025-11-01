@@ -3,7 +3,7 @@ name = "prediction-service"
 version = "0.1.0"
 description = "Сервис для ML предсказаний"
 authors = ["Your Name <you@example.com>"]
-package-mode = false  # <--- отключаем установку текущего проекта
+package-mode = false  # отключаем установку текущего проекта
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.14"
@@ -16,25 +16,17 @@ joblib = "*"
 python-dotenv = "*"
 redis = "*"
 celery = "*"
-uvicorn = "*"
-fastapi = "*"
-pymongo = "*"
+
+django = "*"
+djangorestframework = "*"
+djangorestframework-simplejwt = "*"
+
 pytest = "*"
-ruff = "*"
-autoflake = "*"
-isort = "*"
 pytest-asyncio = "*"
 testcontainers = "*"
 httpx = "*"
-aiogram = "*"
-django = "*"
-django-celery-beat = "*"
-djangorestframework = "*"
-djangorestframework-simplejwt = "^5.5.1"
-drf-spectacular = "^0.28.0"
-pytest-django = "^4.11.1"
-aiohttp = "^3.13.2"
-pytest-aiohttp = "^1.1.0"
+aiogram = "^3.22.0"
+drf-spectacular = "^0.29.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
@@ -42,6 +34,11 @@ pytest-django = "*"
 autoflake = "*"
 isort = "*"
 ruff = "*"
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+python_files = ["test_*.py", "*_test.py"]
+addopts = "-v --disable-warnings -p no:cacheprovider --log-cli-level=INFO"
 
 [build-system]
 requires = ["poetry-core>=1.6.0"]

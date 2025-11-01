@@ -1,99 +1,29 @@
-import logging
-
-from celery.result import AsyncResult
 from django.contrib.auth.models import User
-from rest_framework import generics, permissions, serializers, status
+from django.db import IntegrityError
+from rest_framework import serializers, status
 from rest_framework.response import Response
-from rest_framework.views import APIView, Request
+from rest_framework.views import APIView
 
-from backend.di import map_repo, player_repo, team_repo
-from backend.tasks import ml_forecast_inference_task
-
-log = logging.getLogger(__name__)
+from backend.di import dictionary_service, forecaster_service
+from backend.models import TrainMetric, TrainResult
 
 
-class RegisterSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True)
-
-    class Meta:
-        model = User
-        fields = ("username", "password", "email")
-
-    def create(self, validated_data):
-        user = User.objects.create_user(
-            username=validated_data["username"],
-            password=validated_data["password"],
-            email=validated_data.get("email", ""),
-        )
-        return user
+class MapResponse(serializers.Serializer):
+    map_id = serializers.IntegerField()
+    name = serializers.CharField()
 
 
-class RegisterHandler(generics.CreateAPIView):
-    queryset = User.objects.all()
-    serializer_class = RegisterSerializer
+class TeamResponse(serializers.Serializer):
+    team_id = serializers.IntegerField()
+    name = serializers.CharField()
 
 
-class MapSearchHandler(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-    repo = map_repo
-
-    def get(self, request: Request) -> Response:
-        name = request.query_params.get("name", "")
-        limit = (
-            int(request.query_params.get("limit", 10))
-            if request.query_params.get("limit", "").isdigit()
-            else 10
-        )
-        offset = (
-            int(request.query_params.get("offset", 0))
-            if request.query_params.get("offset", "").isdigit()
-            else 0
-        )
-        results = self.repo.search_by_name(name=name, limit=limit, offset=offset)
-        return Response(results, status=status.HTTP_200_OK)
+class PlayerResponse(serializers.Serializer):
+    player_id = serializers.IntegerField()
+    name = serializers.CharField()
 
 
-class TeamSearchHandler(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-    repo = team_repo
-
-    def get(self, request: Request) -> Response:
-        name = request.query_params.get("name", "")
-        limit = (
-            int(request.query_params.get("limit", 10))
-            if request.query_params.get("limit", "").isdigit()
-            else 10
-        )
-        offset = (
-            int(request.query_params.get("offset", 0))
-            if request.query_params.get("offset", "").isdigit()
-            else 0
-        )
-        results = self.repo.search_by_name(name=name, limit=limit, offset=offset)
-        return Response(results, status=status.HTTP_200_OK)
-
-
-class PlayerSearchHandler(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-    repo = player_repo
-
-    def get(self, request: Request) -> Response:
-        name = request.query_params.get("name", "")
-        limit = (
-            int(request.query_params.get("limit", 10))
-            if request.query_params.get("limit", "").isdigit()
-            else 10
-        )
-        offset = (
-            int(request.query_params.get("offset", 0))
-            if request.query_params.get("offset", "").isdigit()
-            else 0
-        )
-        results = self.repo.search_by_name(name=name, limit=limit, offset=offset)
-        return Response(results, status=status.HTTP_200_OK)
-
-
-class ForecastRequestSerializer(serializers.Serializer):
+class ForecastRequest(serializers.Serializer):
     map_id = serializers.IntegerField()
     team1_id = serializers.IntegerField()
     team2_id = serializers.IntegerField()
@@ -109,67 +39,187 @@ class ForecastRequestSerializer(serializers.Serializer):
     team2_player5_id = serializers.IntegerField()
 
 
-class ForecastResponseSerializer(serializers.Serializer):
-    task_id = serializers.CharField()
+class ForecastResponse(serializers.Serializer):
+    forecast_id = serializers.CharField()
 
 
-class ForecastResultSerializer(serializers.Serializer):
-    task_id = serializers.CharField()
+class ForecastResultResponse(serializers.Serializer):
+    forecast_id = serializers.CharField()
     team1_id = serializers.IntegerField()
     team2_id = serializers.IntegerField()
     team1_win_probability = serializers.FloatField()
     team2_win_probability = serializers.FloatField()
 
 
-class ForecastHandler(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+class RegisterRequest(serializers.Serializer):
+    username = serializers.CharField(max_length=150)
+    password = serializers.CharField(max_length=128, write_only=True)
 
-    def post(self, request: Request) -> Response:
-        serializer = ForecastRequestSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class RegisterResponse(serializers.Serializer):
+    user_id = serializers.CharField()
+
+
+class RegisterHandler(APIView):
+    def post(self, request):
+        serializer = RegisterRequest(data=request.data)
+        serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        log.info(f"Запуск задачи прогнозирования с входными данными: {data}")
+
         try:
-            task = ml_forecast_inference_task.apply_async(args=[data])
-            log.info(f"Celery task запущена: {task.id}")
-            response_serializer = ForecastResponseSerializer({"task_id": task.id})
-            return Response(response_serializer.data, status=status.HTTP_202_ACCEPTED)
-        except Exception as e:
-            log.exception(f"Ошибка при запуске задачи прогнозирования: {e}")
-            return Response(
-                {"detail": "Ошибка при запуске задачи"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            user = User.objects.create_user(
+                username=data["username"], password=data["password"]
             )
+        except IntegrityError:
+            return Response(
+                {"detail": "Username already exists."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        response_serializer = RegisterResponse({"user_id": user.id})
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class MapHandler(APIView):
+    def get(self, request):
+        name = request.GET.get("name", "")
+        page = int(request.GET.get("page", 1))
+        page_size = int(request.GET.get("page_size", 10))
+        results = dictionary_service.search_map_by_name(
+            name=name, page=page, per_page=page_size
+        )
+        serializer = MapResponse(results, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class TeamHandler(APIView):
+    def get(self, request):
+        name = request.GET.get("name", "")
+        page = int(request.GET.get("page", 1))
+        page_size = int(request.GET.get("page_size", 10))
+        results = dictionary_service.search_team_by_name(
+            name=name, page=page, per_page=page_size
+        )
+        serializer = TeamResponse(results, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class PlayerHandler(APIView):
+    def get(self, request):
+        name = request.GET.get("name", "")
+        page = int(request.GET.get("page", 1))
+        page_size = int(request.GET.get("page_size", 10))
+        results = dictionary_service.search_player_by_name(
+            name=name, page=page, per_page=page_size
+        )
+        serializer = PlayerResponse(results, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class ForecastHandler(APIView):
+    def post(self, request):
+        serializer = ForecastRequest(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        forecast_id = forecaster_service.forecast(
+            map_id=data["map_id"],
+            team1_id=data["team1_id"],
+            team2_id=data["team2_id"],
+            team1_player1_id=data["team1_player1_id"],
+            team1_player2_id=data["team1_player2_id"],
+            team1_player3_id=data["team1_player3_id"],
+            team1_player4_id=data["team1_player4_id"],
+            team1_player5_id=data["team1_player5_id"],
+            team2_player1_id=data["team2_player1_id"],
+            team2_player2_id=data["team2_player2_id"],
+            team2_player3_id=data["team2_player3_id"],
+            team2_player4_id=data["team2_player4_id"],
+            team2_player5_id=data["team2_player5_id"],
+        )
+
+        response_serializer = ForecastResponse({"forecast_id": forecast_id})
+        return Response(response_serializer.data, status=status.HTTP_202_ACCEPTED)
 
 
 class ForecastResultHandler(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    def get(self, request, forecast_id):
+        task_result = forecaster_service.get_forecast_result_by_id(forecast_id)
+        state = task_result.state
 
-    def get(self, request: Request, task_id: str) -> Response:
-        result = AsyncResult(task_id)
-
-        if result.state == "PENDING":
+        if state == "PENDING":
             return Response(
-                {"status": "PENDING", "task_id": task_id},
-                status=status.HTTP_202_ACCEPTED,
+                {"status": "PENDING", "message": "Task is still running."},
+                status=status.HTTP_200_OK,
             )
-        if result.failed():
+        elif state == "FAILURE":
             return Response(
-                {"status": "FAILED", "task_id": task_id, "error": str(result.result)},
+                {"status": "FAILURE", "message": "Task execution failed."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-        if result.successful():
-            data = result.result
-            data["task_id"] = task_id
-            response_serializer = ForecastResultSerializer(data=data)
-            if response_serializer.is_valid():
-                return Response(response_serializer.data, status=status.HTTP_200_OK)
+        elif state == "SUCCESS":
+            result_data = task_result.result
+            result_data["forecast_id"] = forecast_id
+            serializer = ForecastResultResponse(data=result_data)
+            if serializer.is_valid():
+                return Response(
+                    {"status": "SUCCESS", "result": serializer.data},
+                    status=status.HTTP_200_OK,
+                )
+            else:
+                return Response(
+                    {"status": "FAILURE", "message": "Invalid result format"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+        else:
+            return Response({"status": state}, status=status.HTTP_200_OK)
+
+
+class MLMetricsResponse(serializers.Serializer):
+    train_result_id = serializers.UUIDField()
+    auc = serializers.FloatField(allow_null=True)
+    f1 = serializers.FloatField(allow_null=True)
+    precision = serializers.FloatField(allow_null=True)
+    recall = serializers.FloatField(allow_null=True)
+    accuracy = serializers.FloatField(allow_null=True)
+    tp = serializers.IntegerField(allow_null=True)
+    tn = serializers.IntegerField(allow_null=True)
+    fp = serializers.IntegerField(allow_null=True)
+    fn = serializers.IntegerField(allow_null=True)
+    created_at = serializers.DateTimeField()
+
+
+class MLMetricsHandler(APIView):
+    def get(self, request):
+        latest_train_result = TrainResult.objects.order_by("-created_at").first()
+        if not latest_train_result:
             return Response(
-                response_serializer.errors, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {"detail": "No training results found."},
+                status=status.HTTP_404_NOT_FOUND,
             )
 
-        return Response(
-            {"status": result.status, "task_id": task_id},
-            status=status.HTTP_202_ACCEPTED,
+        # Get the associated TrainMetric
+        try:
+            train_metric = latest_train_result.train_metric
+        except TrainMetric.DoesNotExist:
+            return Response(
+                {"detail": "Metrics for the latest training result not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = MLMetricsResponse(
+            {
+                "train_result_id": latest_train_result.train_result_id,
+                "auc": train_metric.auc,
+                "f1": train_metric.f1,
+                "precision": train_metric.precision,
+                "recall": train_metric.recall,
+                "accuracy": train_metric.accuracy,
+                "tp": train_metric.tp,
+                "tn": train_metric.tn,
+                "fp": train_metric.fp,
+                "fn": train_metric.fn,
+                "created_at": train_metric.created_at,
+            }
         )
+        return Response(serializer.data, status=status.HTTP_200_OK)

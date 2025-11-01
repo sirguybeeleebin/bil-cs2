@@ -1,108 +1,116 @@
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 import pytest
 
-from backend.models import MLPipeline
+from backend.models import TrainResult, TrainTestSplit
 from backend.repositories import (
     MapRepository,
-    MLPipelineMetricRepository,
-    MLPipelineRepository,
     PlayerRepository,
     TeamRepository,
+    TrainMetricRepository,
+    TrainResultRepository,
+    TrainTestSplitRepository,
 )
 
-pytestmark = pytest.mark.django_db
 
-
-def test_map_upsert_and_search():
+@pytest.mark.django_db
+def test_map_repository_save_and_search():
     repo = MapRepository()
+    saved = repo.save(map_id=1, name="Test Map")
+    assert saved is not None
+    assert saved["map_id"] == 1
+    assert saved["name"] == "Test Map"
 
-    result = repo.upsert(map_id=1, name="Dust II")
-    assert result["map_id"] == 1
-    assert result["name"] == "Dust II"
-
-    # обновление
-    result2 = repo.upsert(map_id=1, name="Dust II Updated")
-    assert result2["name"] == "Dust II Updated"
-
-    results = repo.search_by_name("Dust")
+    results = repo.search_by_name(name="Test", limit=10, offset=0)
     assert len(results) == 1
-    assert results[0]["name"] == "Dust II Updated"
+    assert results[0]["name"] == "Test Map"
 
 
-def test_team_upsert_and_search():
+@pytest.mark.django_db
+def test_team_repository_save_and_search():
     repo = TeamRepository()
-
-    result = repo.upsert(team_id=1, name="Astralis")
-    assert result["team_id"] == 1
-    assert result["name"] == "Astralis"
-
-    results = repo.search_by_name("stra")
+    repo.save(team_id=1, name="Team A")
+    results = repo.search_by_name(name="Team", limit=10, offset=0)
     assert len(results) == 1
-    assert results[0]["name"] == "Astralis"
+    assert results[0]["name"] == "Team A"
 
 
-def test_player_upsert_and_search():
+@pytest.mark.django_db
+def test_player_repository_save_and_search():
     repo = PlayerRepository()
-
-    result = repo.upsert(player_id=1, name="s1mple")
-    assert result["player_id"] == 1
-    assert result["name"] == "s1mple"
-
-    results = repo.search_by_name("s1m")
+    repo.save(player_id=1, name="Player One")
+    results = repo.search_by_name(name="Player", limit=10, offset=0)
     assert len(results) == 1
-    assert results[0]["name"] == "s1mple"
+    assert results[0]["name"] == "Player One"
 
 
-def test_ml_pipeline_upsert(tmp_path):
-    repo = MLPipelineRepository()
-
-    pipeline_file = tmp_path / "pipeline.pkl"
-    pipeline_file.write_bytes(b"dummy pipeline data")
-
-    metrics_file = tmp_path / "metrics.json"
-    metrics_file.write_bytes(b'{"roc_auc": 0.9}')
-
-    pipeline_id = uuid4()
-    result = repo.upsert(
-        ml_pipeline_id=pipeline_id,
-        pipeline_file_path=str(pipeline_file),
-        metrics_file_path=str(metrics_file),
+@pytest.mark.django_db
+def test_train_test_split_repository_save():
+    repo = TrainTestSplitRepository()
+    split_hash = "hash123"
+    begin_min = datetime.now() - timedelta(days=1)
+    begin_max = datetime.now()
+    saved = repo.save(
+        train_test_split_hash=split_hash,
+        game_ids_train=[1, 2],
+        game_ids_test=[3, 4],
+        begin_at_min=begin_min,
+        begin_at_max=begin_max,
     )
-    assert result["ml_pipeline_id"] == pipeline_id
-    assert result["pipeline_file_path"] == str(pipeline_file)
-    assert result["metrics_file_path"] == str(metrics_file)
+    assert saved is not None
+    assert saved["train_test_split_hash"] == split_hash
+    assert saved["game_ids_train"] == [1, 2]
+    assert saved["game_ids_test"] == [3, 4]
+    assert saved["begin_at_min"] == begin_min
+    assert saved["begin_at_max"] == begin_max
 
 
-def test_ml_pipeline_metric_upsert():
-    pipeline = MLPipeline.objects.create(
-        pipeline_file_path="pipeline.pkl", metrics_file_path="metrics.json"
+@pytest.mark.django_db
+def test_train_result_repository_save_and_get_last():
+    _ = TrainTestSplit.objects.create(
+        train_test_split_hash="split1", game_ids_train=[1], game_ids_test=[2]
     )
-    repo = MLPipelineMetricRepository()
+    repo = TrainResultRepository()
+    train_result_id = uuid4()
+    saved = repo.save(
+        train_result_id=train_result_id,
+        train_test_split_hash="split1",
+        path_to_model="/path/to/model",
+    )
+    assert saved is not None
+    assert saved["train_result_id"] == train_result_id
+
+    last = repo.get_last()
+    assert last is not None
+    assert last["train_result_id"] == train_result_id
+
+
+@pytest.mark.django_db
+def test_train_metric_repository_save():
+    split = TrainTestSplit.objects.create(
+        train_test_split_hash="split2", game_ids_train=[1], game_ids_test=[2]
+    )
+    train_result = TrainResult.objects.create(
+        train_result_id=uuid4(), train_test_split=split, path_to_model="/model"
+    )
+    repo = TrainMetricRepository()
     metric_id = uuid4()
-
-    result = repo.upsert(
-        ml_pipeline_metric_id=metric_id,
-        ml_pipeline_id=pipeline.ml_pipeline_id,
-        roc_auc=0.9,
+    saved = repo.save(
+        train_metric_id=metric_id,
+        train_result_id=train_result.train_result_id,
+        auc=0.9,
         f1=0.8,
-        precision=0.7,
-        recall=0.85,
-        accuracy=0.95,
+        precision=0.85,
+        recall=0.75,
+        accuracy=0.88,
         tp=10,
         tn=20,
-        fp=1,
+        fp=5,
         fn=2,
     )
-
-    assert result["ml_pipeline_metric_id"] == metric_id
-    assert str(result["ml_pipeline_id"]) == str(pipeline.ml_pipeline_id)
-    assert result["roc_auc"] == 0.9
-    assert result["f1"] == 0.8
-    assert result["precision"] == 0.7
-    assert result["recall"] == 0.85
-    assert result["accuracy"] == 0.95
-    assert result["tp"] == 10
-    assert result["tn"] == 20
-    assert result["fp"] == 1
-    assert result["fn"] == 2
+    assert saved is not None
+    assert saved["train_metric_id"] == metric_id
+    assert saved["auc"] == 0.9
+    assert saved["tp"] == 10
+    assert saved["fn"] == 2

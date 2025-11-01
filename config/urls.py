@@ -1,37 +1,30 @@
 from django.contrib import admin
 from django.urls import path
-from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from backend.handlers import (
     ForecastHandler,
     ForecastResultHandler,
-    MapSearchHandler,
-    PlayerSearchHandler,
+    MapHandler,
+    MLMetricsHandler,
+    PlayerHandler,
     RegisterHandler,
-    TeamSearchHandler,
+    TeamHandler,
 )
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path("api/v1/schema/", SpectacularAPIView.as_view(), name="schema"),
-    path(
-        "api/v1/docs/",
-        SpectacularSwaggerView.as_view(url_name="schema"),
-        name="swagger-ui",
-    ),
-    path("api/v1/auth/register/", RegisterHandler.as_view(), name="register"),
-    path("api/v1/auth/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
-    path(
-        "api/v1/auth/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"
-    ),
-    path("api/v1/maps/", MapSearchHandler.as_view(), name="map-search"),
-    path("api/v1/teams/", TeamSearchHandler.as_view(), name="team-search"),
-    path("api/v1/players/", PlayerSearchHandler.as_view(), name="player-search"),
+    path("api/v1/register/", RegisterHandler.as_view(), name="register"),
+    path("api/v1/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
+    path("api/v1/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
+    path("api/v1/maps/", MapHandler.as_view(), name="maps"),
+    path("api/v1/teams/", TeamHandler.as_view(), name="teams"),
+    path("api/v1/players/", PlayerHandler.as_view(), name="players"),
     path("api/v1/forecast/", ForecastHandler.as_view(), name="forecast"),
     path(
-        "api/v1/forecast/<str:task_id>/",
+        "api/v1/forecast/<str:forecast_id>/",
         ForecastResultHandler.as_view(),
-        name="forecast-result",
+        name="forecast_result",
     ),
+    path("api/v1/metrics/", MLMetricsHandler.as_view(), name="ml_metrics_latest"),
 ]
