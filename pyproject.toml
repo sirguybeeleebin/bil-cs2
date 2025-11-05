@@ -1,47 +1,27 @@
 [tool.poetry]
-name = "prediction-service"
+name = "cs2-winner-predictor"
 version = "0.1.0"
 description = "Сервис для ML предсказаний"
 authors = ["Your Name <you@example.com>"]
-package-mode = false  # <--- отключаем установку текущего проекта
+package-mode = false  
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.14"
-psycopg2-binary = "*"
-scikit-learn = "*"
-scipy = "*"
-numpy = "*"
-python-dateutil = "*"
-joblib = "*"
-python-dotenv = "*"
-redis = "*"
-celery = "*"
-uvicorn = "*"
 fastapi = "*"
-pymongo = "*"
-pytest = "*"
-ruff = "*"
+asyncpg = "*"
+PyJWT = "*"
+httpx =  "*"
+python-dotenv =  "*"
+testcontainers =  "*"
+pytest-asyncio =  "*"
+argon2-cffi =  "*"
+uvicorn =  "*"
 autoflake = "*"
-isort = "*"
-pytest-asyncio = "*"
-testcontainers = "*"
-httpx = "*"
-aiogram = "*"
-django = "*"
-django-celery-beat = "*"
-djangorestframework = "*"
-djangorestframework-simplejwt = "^5.5.1"
-drf-spectacular = "^0.28.0"
-pytest-django = "^4.11.1"
-aiohttp = "^3.13.2"
-pytest-aiohttp = "^1.1.0"
+isort =  "*"
+ruff =  "*"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
-pytest-django = "*"
-autoflake = "*"
-isort = "*"
-ruff = "*"
 
 [build-system]
 requires = ["poetry-core>=1.6.0"]
