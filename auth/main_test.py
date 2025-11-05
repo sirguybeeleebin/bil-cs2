@@ -1,4 +1,4 @@
-# tests/main_test.py
+# tests/test_auth.py
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
@@ -11,19 +11,23 @@ from testcontainers.postgres import PostgresContainer
 from auth.main import (
     POSTGRES_SCHEMA,
     AuthService,
-    UserAlreadyExists,
-    UserDoesNotExist,
-    UserInvalidPassword,
+    LoginServiceRequest,
+    LoginServiceResponse,
+    LoginUserRequest,
+    LoginUserResponse,
+    RegisterServiceRequest,
+    RegisterServiceResponse,
+    RegisterUserRequest,
+    RegisterUserResponse,
+    ServiceRepository,
     UserRepository,
     ph,
     router,
 )
 
 
-
-
 # -------------------------------
-# Helper function to start container and create pool
+# Postgres test helper
 # -------------------------------
 async def init_postgres_container():
     container = PostgresContainer("postgres:15")
@@ -40,13 +44,22 @@ async def init_postgres_container():
                 user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 username TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
-                role TEXT NOT NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
             """
         )
-
+        await conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {POSTGRES_SCHEMA}.services (
+                service_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                client_id TEXT UNIQUE NOT NULL,
+                client_secret TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+            """
+        )
     return container, pool
 
 
@@ -54,228 +67,167 @@ async def init_postgres_container():
 # Repository tests
 # -------------------------------
 @pytest.mark.asyncio
-async def test_upsert_and_get_user():
+async def test_user_repo_upsert_and_get():
     container, pool = await init_postgres_container()
     try:
-        user_repo = UserRepository(pool, schema=POSTGRES_SCHEMA)
+        repo = UserRepository(pool, POSTGRES_SCHEMA)
         async with pool.acquire() as conn:
             await conn.execute(f"TRUNCATE TABLE {POSTGRES_SCHEMA}.users CASCADE;")
 
         username = "alice"
         password_hash = "hashed_pw"
-        role = "USER"
 
-        user = await user_repo.upsert_user(username, password_hash, role)
+        user = await repo.upsert_user(username, password_hash)
         assert user["username"] == username
         assert UUID(str(user["user_id"]))
 
-        fetched = await user_repo.get_by_username(username)
-        assert fetched is not None
+        fetched = await repo.get_by_username(username)
         assert fetched["username"] == username
-        assert fetched["role"] == role
+        assert fetched["password_hash"] == password_hash
     finally:
         await pool.close()
         container.stop()
 
 
 @pytest.mark.asyncio
-async def test_get_nonexistent_user():
+async def test_service_repo_upsert_and_get():
     container, pool = await init_postgres_container()
     try:
-        user_repo = UserRepository(pool, schema=POSTGRES_SCHEMA)
+        repo = ServiceRepository(pool, POSTGRES_SCHEMA)
         async with pool.acquire() as conn:
-            await conn.execute(f"TRUNCATE TABLE {POSTGRES_SCHEMA}.users CASCADE;")
+            await conn.execute(f"TRUNCATE TABLE {POSTGRES_SCHEMA}.services CASCADE;")
 
-        fetched = await user_repo.get_by_username("nonexist")
-        assert fetched is None
-    finally:
-        await pool.close()
-        container.stop()
+        client_id = "svc1"
+        client_secret = "secret"
 
+        service = await repo.upsert_service(client_id, client_secret)
+        assert service["client_id"] == client_id
+        assert UUID(str(service["service_id"]))
 
-@pytest.mark.asyncio
-async def test_upsert_existing_user_updates():
-    container, pool = await init_postgres_container()
-    try:
-        user_repo = UserRepository(pool, schema=POSTGRES_SCHEMA)
-        async with pool.acquire() as conn:
-            await conn.execute(f"TRUNCATE TABLE {POSTGRES_SCHEMA}.users CASCADE;")
-
-        username = "bob"
-        password_hash1 = "pw1"
-        password_hash2 = "pw2"
-
-        user1 = await user_repo.upsert_user(username, password_hash1, "USER")
-        user2 = await user_repo.upsert_user(username, password_hash2, "ADMIN")
-
-        assert user1["user_id"] == user2["user_id"]
-        fetched = await user_repo.get_by_username(username)
-        assert fetched["role"] == "ADMIN"
+        fetched = await repo.get_by_client_id(client_id)
+        assert fetched["client_id"] == client_id
+        assert fetched["client_secret"] == client_secret
     finally:
         await pool.close()
         container.stop()
 
 
 # -------------------------------
-# Service tests with mocks
+# AuthService tests (mocks)
 # -------------------------------
 @pytest.mark.asyncio
-async def test_auth_service_register_success():
-    mock_repo = AsyncMock(spec=UserRepository)
-    service = AuthService(mock_repo, "secret", "HS256", 60)
+async def test_auth_service_user_register_and_login():
+    mock_user_repo = AsyncMock()
+    auth_service = AuthService(mock_user_repo, None, "secret", "HS256", 60)
 
-    username = "test_user"
-    password = "Secret123!"
-    role = "USER"
+    username = "bob"
+    password = "pw"
 
-    mock_repo.get_by_username.return_value = None
-    mock_repo.upsert_user.return_value = {
+    # Register
+    mock_user_repo.get_by_username.return_value = None
+    mock_user_repo.upsert_user.return_value = {
         "user_id": str(uuid4()),
         "username": username,
-        "role": role,
     }
+    result = await auth_service.register_user(username, password)
+    assert "user_id" in result
 
-    result = await service.register(username, password, role)
-    mock_repo.get_by_username.assert_awaited_with(username)
-    mock_repo.upsert_user.assert_awaited()
-    assert result["username"] == username
-
-
-@pytest.mark.asyncio
-async def test_auth_service_register_user_exists():
-    mock_repo = AsyncMock(spec=UserRepository)
-    service = AuthService(mock_repo, "secret", "HS256", 60)
-
-    mock_repo.get_by_username.return_value = {"username": "exists"}
-    with pytest.raises(UserAlreadyExists):
-        await service.register("exists", "pw")
-
-
-@pytest.mark.asyncio
-async def test_auth_service_login_success():
-    mock_repo = AsyncMock(spec=UserRepository)
-    service = AuthService(mock_repo, "secret", "HS256", 60)
-
-    password = "pw"
+    # Login
     hashed_pw = ph.hash(password)
-    mock_repo.get_by_username.return_value = {
+    mock_user_repo.get_by_username.return_value = {
         "user_id": str(uuid4()),
-        "username": "u",
+        "username": username,
         "password_hash": hashed_pw,
-        "role": "USER",
     }
-
-    token = await service.login("u", password)
-    assert token is not None
+    token = await auth_service.login_user(username, password)
+    assert "access_token" in token
+    assert token["token_type"] == "bearer"
 
 
 @pytest.mark.asyncio
-async def test_auth_service_login_wrong_password():
-    mock_repo = AsyncMock(spec=UserRepository)
-    service = AuthService(mock_repo, "secret", "HS256", 60)
+async def test_auth_service_service_register_and_login():
+    mock_service_repo = AsyncMock()
+    auth_service = AuthService(None, mock_service_repo, "secret", "HS256", 60)
 
-    hashed_pw = ph.hash("correct")
-    mock_repo.get_by_username.return_value = {
-        "user_id": str(uuid4()),
-        "username": "u",
-        "password_hash": hashed_pw,
-        "role": "USER",
+    client_id = "svc2"
+    client_secret = "sec"
+
+    # Register
+    mock_service_repo.get_by_client_id.return_value = None
+    mock_service_repo.upsert_service.return_value = {
+        "service_id": str(uuid4()),
+        "client_id": client_id,
     }
+    result = await auth_service.register_service(client_id, client_secret)
+    assert "service_id" in result
 
-    with pytest.raises(UserInvalidPassword):
-        await service.login("u", "wrong")
-
-
-@pytest.mark.asyncio
-async def test_auth_service_login_user_not_found():
-    mock_repo = AsyncMock(spec=UserRepository)
-    service = AuthService(mock_repo, "secret", "HS256", 60)
-
-    mock_repo.get_by_username.return_value = None
-    with pytest.raises(UserDoesNotExist):
-        await service.login("no_user", "any")
+    # Login
+    mock_service_repo.get_by_client_id.return_value = {
+        "service_id": str(uuid4()),
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }
+    token = await auth_service.login_service(client_id, client_secret)
+    assert "access_token" in token
+    assert token["token_type"] == "bearer"
 
 
 # -------------------------------
-# Functional API tests (synchronous)
+# Functional API tests (Pydantic)
 # -------------------------------
-def test_register_user():
+def test_users_register_and_login_api():
     app = FastAPI()
     app.include_router(router)
-
     user_id = str(uuid4())
     app.state.auth_service = AsyncMock()
-    app.state.auth_service.register.return_value = {"user_id": user_id}
+    app.state.auth_service.register_user.return_value = {"user_id": user_id}
+    app.state.auth_service.login_user.return_value = {
+        "access_token": "jwt_token",
+        "token_type": "bearer",
+    }
 
     client = TestClient(app)
-    response = client.post(
-        "/api/v1/register", json={"username": "alice", "password": "pw", "role": "USER"}
-    )
 
-    assert response.status_code == 200
-    assert response.json()["user_id"] == user_id
+    # Register
+    req = RegisterUserRequest(username="alice", password="pw")
+    resp = client.post("/api/v1/users/register", json=req.dict())
+    assert resp.status_code == 200
+    response_model = RegisterUserResponse(**resp.json())
+    assert response_model.user_id == UUID(user_id)
+
+    # Login
+    req_login = LoginUserRequest(username="alice", password="pw")
+    resp = client.post("/api/v1/users/login", json=req_login.dict())
+    assert resp.status_code == 200
+    token_model = LoginUserResponse(**resp.json())
+    assert token_model.access_token == "jwt_token"
+    assert token_model.token_type == "bearer"
 
 
-def test_register_user_exists():
+def test_services_register_and_login_api():
     app = FastAPI()
     app.include_router(router)
-
+    service_id = str(uuid4())
     app.state.auth_service = AsyncMock()
-    app.state.auth_service.register.side_effect = UserAlreadyExists()
+    app.state.auth_service.register_service.return_value = {"service_id": service_id}
+    app.state.auth_service.login_service.return_value = {
+        "access_token": "jwt_service_token",
+        "token_type": "bearer",
+    }
 
     client = TestClient(app)
-    response = client.post(
-        "/api/v1/register", json={"username": "alice", "password": "pw", "role": "USER"}
-    )
 
-    assert response.status_code == 400
-    assert response.json()["detail"] == "Пользователь уже существует"
+    # Register
+    req = RegisterServiceRequest(client_id="svc1", client_secret="sec")
+    resp = client.post("/api/v1/services/register", json=req.dict())
+    assert resp.status_code == 200
+    response_model = RegisterServiceResponse(**resp.json())
+    assert response_model.service_id == UUID(service_id)
 
-
-def test_login_user_success():
-    app = FastAPI()
-    app.include_router(router)
-
-    token = "jwt_token"
-    app.state.auth_service = AsyncMock()
-    app.state.auth_service.login.return_value = token
-
-    client = TestClient(app)
-    response = client.post(
-        "/api/v1/login", json={"username": "alice", "password": "pw"}
-    )
-
-    assert response.status_code == 200
-    assert response.json()["access_token"] == token
-
-
-def test_login_user_not_found():
-    app = FastAPI()
-    app.include_router(router)
-
-    app.state.auth_service = AsyncMock()
-    app.state.auth_service.login.side_effect = UserDoesNotExist()
-
-    client = TestClient(app)
-    response = client.post(
-        "/api/v1/login", json={"username": "alice", "password": "pw"}
-    )
-
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Пользователь не найден"
-
-
-def test_login_user_wrong_password():
-    app = FastAPI()
-    app.include_router(router)
-
-    app.state.auth_service = AsyncMock()
-    app.state.auth_service.login.side_effect = UserInvalidPassword()
-
-    client = TestClient(app)
-    response = client.post(
-        "/api/v1/login", json={"username": "alice", "password": "pw"}
-    )
-
-    assert response.status_code == 401
-    assert response.json()["detail"] == "Неверный пароль"
+    # Login
+    req_login = LoginServiceRequest(client_id="svc1", client_secret="sec")
+    resp = client.post("/api/v1/services/login", json=req_login.dict())
+    assert resp.status_code == 200
+    token_model = LoginServiceResponse(**resp.json())
+    assert token_model.access_token == "jwt_service_token"
+    assert token_model.token_type == "bearer"

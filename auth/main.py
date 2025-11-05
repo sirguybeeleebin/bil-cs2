@@ -2,8 +2,6 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from enum import StrEnum
-from functools import wraps
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -12,123 +10,138 @@ import uvicorn
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, Field
-from starlette import status
 
 load_dotenv()
 APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
 APP_PORT = int(os.getenv("APP_PORT", 8000))
-APP_WORKERS = int(os.getenv("APP_WORKERS", 1))
 APP_LOG_LEVEL = os.getenv("APP_LOG_LEVEL", "info")
 
-logging.basicConfig(level=APP_LOG_LEVEL.upper())
-log = logging.getLogger("auth_service")
-
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "jwt_secret_key")
-JWT_ALGORITHM = os.getenv("JWT_AL", "HS256")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", 60))
 
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
 POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", 5432))
-POSTGRES_USER = os.getenv("POSTGRES_USER", "cs2_user")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "cs2_password")
-POSTGRES_DB = os.getenv("POSTGRES_DB", "cs2_db")
-POSTGRES_POOL_MIN_SIZE = int(os.getenv("POSTGRES_POOL_MIN_SIZE", 1))
-POSTGRES_POOL_MAX_SIZE = int(os.getenv("POSTGRES_POOL_MAX_SIZE", 10))
-POSTGRES_POOL_MAX_IDLE = int(os.getenv("POSTGRES_POOL_MAX_IDLE", 10))
+POSTGRES_USER = os.getenv("POSTGRES_USER", "auth_user")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "auth_pass")
+POSTGRES_DB = os.getenv("POSTGRES_DB", "auth_db")
 POSTGRES_SCHEMA = os.getenv("POSTGRES_SCHEMA", "auth")
 
 DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
-API_PREFIX = os.getenv("API_PREFIX", "/api/v1")
 
+logging.basicConfig(level=APP_LOG_LEVEL.upper())
+log = logging.getLogger("auth_service")
 ph = PasswordHasher()
 
 
-class Audience(StrEnum):
-    AUTH = "AUTH"
-    ADMIN = "ADMIN"
-    USER = "USER"
-    ETL_DICTIONARY = "ETL_DICTIONARY"
-    DICTIONARY = "DICTIONARY"
-    ETL_ML = "ETL_ML"
-    ML = "ML"
-    FORECAST = "FORECAST"
-
-
-def authorize(expected_audience: Audience):
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, request: Request, **kwargs):
-            auth_header: str | None = request.headers.get("Authorization")
-            if not auth_header or not auth_header.startswith("Bearer "):
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Отсутствует токен авторизации",
-                )
-            token: str = auth_header.split(" ")[1]
-            try:
-                payload: dict = jwt.decode(
-                    token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM]
-                )
-                user_audience = payload.get("aud", Audience.AUTH.value)
-                if user_audience != expected_audience.value:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Нет доступа к этому ресурсу",
-                    )
-                request.state.user = payload
-            except jwt.ExpiredSignatureError:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Срок действия токена истёк",
-                )
-            except jwt.InvalidTokenError as e:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=f"Недействительный токен: {str(e)}",
-                )
-            return await func(*args, request=request, **kwargs)
-
-        return wrapper
-
-    return decorator
-
-
-class RegisterRequest(BaseModel):
+class RegisterUserRequest(BaseModel):
     username: str = Field(
-        title="Имя пользователя", examples=["user123"], default="user123"
+        ...,
+        title="Имя пользователя",
+        description="Уникальное имя пользователя для регистрации",
+        examples=["user123", "ivan_petrov", "alice"],
     )
-    password: str = Field(title="Пароль", examples=["P@ssw0rd!"], default="P@ssw0rd!")
-    role: Audience = Field(title="Роль пользователя", default=Audience.USER)
+    password: str = Field(
+        ...,
+        title="Пароль",
+        description="Пароль пользователя",
+        examples=["Password123!", "qwerty2025", "MySecretPass"],
+    )
 
 
-class RegisterResponse(BaseModel):
-    user_id: UUID = Field(title="ID пользователя", examples=[uuid4()])
+class RegisterUserResponse(BaseModel):
+    user_id: UUID = Field(
+        ...,
+        title="ID пользователя",
+        description="Уникальный идентификатор зарегистрированного пользователя",
+        examples=["550e8400-e29b-41d4-a716-446655440000"],
+    )
 
 
-class LoginRequest(BaseModel):
+class LoginUserRequest(BaseModel):
     username: str = Field(
-        title="Имя пользователя", examples=["user123"], default="user123"
+        ...,
+        title="Имя пользователя",
+        description="Имя пользователя для входа",
+        examples=["user123", "ivan_petrov", "alice"],
     )
-    password: str = Field(title="Пароль", examples=["P@ssw0rd!"], default="P@ssw0rd!")
+    password: str = Field(
+        ...,
+        title="Пароль",
+        description="Пароль пользователя",
+        examples=["Password123!", "qwerty2025", "MySecretPass"],
+    )
 
 
-class LoginResponse(BaseModel):
-    access_token: str = Field(title="JWT токен доступа")
-    token_type: str = Field(default="bearer")
+class LoginUserResponse(BaseModel):
+    access_token: str = Field(
+        ...,
+        title="Токен доступа",
+        description="JWT токен для аутентификации",
+        examples=["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."],
+    )
+    token_type: str = Field(
+        "bearer",
+        title="Тип токена",
+        description="Тип токена (по умолчанию 'bearer')",
+        examples=["bearer"],
+    )
 
 
-class UserAlreadyExists(Exception):
-    pass
+class RegisterServiceRequest(BaseModel):
+    client_id: str = Field(
+        ...,
+        title="ID клиента",
+        description="Уникальный идентификатор сервиса",
+        examples=["service_123", "payment_service", "analytics"],
+    )
+    client_secret: str = Field(
+        ...,
+        title="Секрет клиента",
+        description="Секрет для аутентификации сервиса",
+        examples=["supersecret123", "payment2025", "serviceKey!"],
+    )
 
 
-class UserDoesNotExist(Exception):
-    pass
+class RegisterServiceResponse(BaseModel):
+    service_id: UUID = Field(
+        ...,
+        title="ID сервиса",
+        description="Уникальный идентификатор зарегистрированного сервиса",
+        examples=["550e8400-e29b-41d4-a716-446655440000"],
+    )
 
 
-class UserInvalidPassword(Exception):
-    pass
+class LoginServiceRequest(BaseModel):
+    client_id: str = Field(
+        ...,
+        title="ID клиента",
+        description="Уникальный идентификатор сервиса для входа",
+        examples=["service_123", "payment_service", "analytics"],
+    )
+    client_secret: str = Field(
+        ...,
+        title="Секрет клиента",
+        description="Секрет для аутентификации сервиса",
+        examples=["supersecret123", "payment2025", "serviceKey!"],
+    )
+
+
+class LoginServiceResponse(BaseModel):
+    access_token: str = Field(
+        ...,
+        title="Токен доступа",
+        description="JWT токен для аутентификации сервиса",
+        examples=["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."],
+    )
+    token_type: str = Field(
+        "bearer",
+        title="Тип токена",
+        description="Тип токена (по умолчанию 'bearer')",
+        examples=["bearer"],
+    )
 
 
 class UserRepository:
@@ -137,173 +150,208 @@ class UserRepository:
         self.schema = schema
 
     async def get_by_username(self, username: str) -> dict | None:
-        query = f"""
-            SELECT user_id, username, password_hash, role, created_at, updated_at
-            FROM {self.schema}.users
-            WHERE username=$1
-        """
-        try:
-            async with self.pool.acquire() as conn:
-                row = await conn.fetchrow(query, username)
-                if row:
-                    log.info("Пользователь '%s' найден в базе данных.", username)
-                else:
-                    log.info("Пользователь '%s' не найден в базе данных.", username)
-                return dict(row) if row else None
-        except Exception as e:
-            log.error("Ошибка при получении пользователя '%s': %s", username, e)
-            return None
+        query = f"SELECT user_id, username, password_hash FROM {self.schema}.users WHERE username=$1"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, username)
+            return dict(row) if row else None
 
-    async def upsert_user(
-        self, username: str, hashed_password: str, role: str = Audience.USER.value
-    ) -> dict | None:
+    async def upsert_user(self, username: str, password_hash: str) -> dict:
         query = f"""
-            INSERT INTO {self.schema}.users(username, password_hash, role, created_at, updated_at)
+            INSERT INTO {self.schema}.users(user_id, username, password_hash, created_at, updated_at)
             VALUES ($1, $2, $3, NOW(), NOW())
             ON CONFLICT (username) DO UPDATE
             SET password_hash = EXCLUDED.password_hash,
-                role = EXCLUDED.role,
                 updated_at = NOW()
-            RETURNING user_id, username, role
+            RETURNING user_id, username
         """
-        try:
-            async with self.pool.acquire() as conn:
-                row = await conn.fetchrow(query, username, hashed_password, role)
-                log.info(
-                    "Пользователь '%s' успешно добавлен/обновлён в базе данных.",
-                    username,
-                )
-                return dict(row) if row else None
-        except Exception as e:
-            log.error(
-                "Ошибка при добавлении/обновлении пользователя '%s': %s", username, e
-            )
-            return None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, uuid4(), username, password_hash)
+            return dict(row)
+
+
+class ServiceRepository:
+    def __init__(self, pool: asyncpg.Pool, schema: str):
+        self.pool = pool
+        self.schema = schema
+
+    async def get_by_client_id(self, client_id: str) -> dict | None:
+        query = f"SELECT service_id, client_id, client_secret FROM {self.schema}.services WHERE client_id=$1"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, client_id)
+            return dict(row) if row else None
+
+    async def upsert_service(self, client_id: str, client_secret: str) -> dict:
+        query = f"""
+            INSERT INTO {self.schema}.services(service_id, client_id, client_secret, created_at, updated_at)
+            VALUES ($1, $2, $3, NOW(), NOW())
+            ON CONFLICT (client_id) DO UPDATE
+            SET client_secret = EXCLUDED.client_secret,
+                updated_at = NOW()
+            RETURNING service_id, client_id
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, uuid4(), client_id, client_secret)
+            return dict(row)
+
+
+class UserExistsError(Exception):
+    pass
+
+
+class UserNotFoundError(Exception):
+    pass
+
+
+class InvalidUserPasswordError(Exception):
+    pass
+
+
+class ServiceExistsError(Exception):
+    pass
+
+
+class ServiceNotFoundError(Exception):
+    pass
+
+
+class InvalidServiceSecretError(Exception):
+    pass
 
 
 class AuthService:
     def __init__(
         self,
-        user_repository: UserRepository,
+        user_repo: UserRepository,
+        service_repo: ServiceRepository,
         jwt_secret_key: str,
         jwt_algorithm: str,
-        jwt_access_token_expire_minutes: int,
+        jwt_exp_minutes: int,
     ):
-        self.user_repository = user_repository
+        self.user_repo = user_repo
+        self.service_repo = service_repo
         self.jwt_secret_key = jwt_secret_key
         self.jwt_algorithm = jwt_algorithm
-        self.jwt_access_token_expire_minutes = jwt_access_token_expire_minutes
+        self.jwt_exp_minutes = jwt_exp_minutes
 
-    async def register(
-        self, username: str, password: str, role: str = Audience.USER.value
-    ) -> dict:
-        existing_user = await self.user_repository.get_by_username(username)
-        if existing_user:
-            log.warning(
-                "Попытка зарегистрировать уже существующего пользователя '%s'.",
-                username,
-            )
-            raise UserAlreadyExists
-        hashed_password = ph.hash(password)
-        new_user = await self.user_repository.upsert_user(
-            username, hashed_password, role
-        )
-        log.info("Пользователь '%s' успешно зарегистрирован.", username)
-        return new_user
+    async def register_user(self, username: str, password: str) -> dict:
+        existing = await self.user_repo.get_by_username(username)
+        if existing:
+            raise UserExistsError()
+        hashed = ph.hash(password)
+        user = await self.user_repo.upsert_user(username, hashed)
+        return {"user_id": str(user["user_id"])}
 
-    async def login(self, username: str, password: str) -> str:
-        db_user = await self.user_repository.get_by_username(username)
-        if not db_user:
-            log.warning("Попытка входа несуществующего пользователя '%s'.", username)
-            raise UserDoesNotExist
+    async def login_user(self, username: str, password: str) -> dict:
+        user = await self.user_repo.get_by_username(username)
+        if not user:
+            raise UserNotFoundError()
         try:
-            ph.verify(db_user["password_hash"], password)
+            ph.verify(user["password_hash"], password)
         except VerifyMismatchError:
-            log.warning("Неверный пароль для пользователя '%s'.", username)
-            raise UserInvalidPassword
-        expire = datetime.utcnow() + timedelta(
-            minutes=self.jwt_access_token_expire_minutes
-        )
+            raise InvalidUserPasswordError()
+        exp = datetime.utcnow() + timedelta(minutes=self.jwt_exp_minutes)
+        payload = {"user_id": str(user["user_id"]), "exp": exp, "type": "user"}
+        token = jwt.encode(payload, self.jwt_secret_key, algorithm=self.jwt_algorithm)
+        return {"access_token": token, "token_type": "bearer"}
+
+    async def register_service(self, client_id: str, client_secret: str) -> dict:
+        existing = await self.service_repo.get_by_client_id(client_id)
+        if existing:
+            raise ServiceExistsError()
+        service = await self.service_repo.upsert_service(client_id, client_secret)
+        return {"service_id": str(service["service_id"])}
+
+    async def login_service(self, client_id: str, client_secret: str) -> dict:
+        service = await self.service_repo.get_by_client_id(client_id)
+        if not service:
+            raise ServiceNotFoundError()
+        if service["client_secret"] != client_secret:
+            raise InvalidServiceSecretError()
+        exp = datetime.utcnow() + timedelta(minutes=self.jwt_exp_minutes)
         payload = {
-            "user_id": str(db_user["user_id"]),
-            "aud": db_user.get("role", Audience.USER.value),
-            "exp": expire,
+            "service_id": str(service["service_id"]),
+            "exp": exp,
+            "type": "service",
         }
         token = jwt.encode(payload, self.jwt_secret_key, algorithm=self.jwt_algorithm)
-        log.info("Пользователь '%s' успешно вошёл в систему.", username)
-        return token
+        return {"access_token": token, "token_type": "bearer"}
 
 
-router = APIRouter(prefix=API_PREFIX)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.pool = await asyncpg.create_pool(DATABASE_URL)
+    app.state.user_repo = UserRepository(app.state.pool, schema=POSTGRES_SCHEMA)
+    app.state.service_repo = ServiceRepository(app.state.pool, schema=POSTGRES_SCHEMA)
+    app.state.auth_service = AuthService(
+        app.state.user_repo,
+        app.state.service_repo,
+        JWT_SECRET_KEY,
+        JWT_ALGORITHM,
+        JWT_ACCESS_TOKEN_EXPIRE_MINUTES,
+    )
+    yield
+    await app.state.pool.close()
 
 
-@router.post("/register", response_model=RegisterResponse)
-async def register(user: RegisterRequest, request: Request):
-    auth_service: AuthService = request.app.state.auth_service
+app = FastAPI(title="Auth Service", lifespan=lifespan)
+router = APIRouter(prefix="/api/v1")
+
+
+@router.post("/users/register", response_model=RegisterUserResponse)
+async def register_user(request: RegisterUserRequest, http_request: Request):
+    service: AuthService = http_request.app.state.auth_service
     try:
-        new_user = await auth_service.register(
-            user.username, user.password, user.role.value
-        )
-        log.info("Регистрация пользователя '%s' прошла успешно.", user.username)
-        return RegisterResponse(user_id=new_user["user_id"])
-    except UserAlreadyExists:
-        log.warning(
-            "Попытка регистрации существующего пользователя '%s'.", user.username
-        )
+        data = await service.register_user(request.username, request.password)
+        return RegisterUserResponse(**data)
+    except UserExistsError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Пользователь уже существует",
         )
 
 
-@router.post("/login", response_model=LoginResponse)
-async def login(user: LoginRequest, request: Request):
-    auth_service: AuthService = request.app.state.auth_service
+@router.post("/users/login", response_model=LoginUserResponse)
+async def login_user(request: LoginUserRequest, http_request: Request):
+    service: AuthService = http_request.app.state.auth_service
     try:
-        token = await auth_service.login(user.username, user.password)
-        log.info("Вход пользователя '%s' выполнен успешно.", user.username)
-        return LoginResponse(access_token=token)
-    except UserDoesNotExist:
-        log.warning("Попытка входа несуществующего пользователя '%s'.", user.username)
+        data = await service.login_user(request.username, request.password)
+        return LoginUserResponse(**data)
+    except UserNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден"
         )
-    except UserInvalidPassword:
-        log.warning(
-            "Попытка входа с неверным паролем для пользователя '%s'.", user.username
-        )
+    except InvalidUserPasswordError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный пароль"
         )
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    log.info(
-        "Подключение к базе данных PostgreSQL (%s:%s)...", POSTGRES_HOST, POSTGRES_PORT
-    )
-    pool = await asyncpg.create_pool(
-        DATABASE_URL,
-        min_size=POSTGRES_POOL_MIN_SIZE,
-        max_size=POSTGRES_POOL_MAX_SIZE,
-        max_inactive_connection_lifetime=POSTGRES_POOL_MAX_IDLE,
-    )
-    log.info("Соединение с базой данных установлено.")
-    app.state.user_repo = UserRepository(pool, schema=POSTGRES_SCHEMA)
-    app.state.auth_service = AuthService(
-        app.state.user_repo,
-        JWT_SECRET_KEY,
-        JWT_ALGORITHM,
-        JWT_ACCESS_TOKEN_EXPIRE_MINUTES,
-    )
-    yield
-    log.info("Закрытие пула соединений с базой данных...")
-    await pool.close()
-    log.info("Пул соединений закрыт.")
+@router.post("/services/register", response_model=RegisterServiceResponse)
+async def register_service(request: RegisterServiceRequest, http_request: Request):
+    service: AuthService = http_request.app.state.auth_service
+    try:
+        data = await service.register_service(request.client_id, request.client_secret)
+        return RegisterServiceResponse(**data)
+    except ServiceExistsError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Сервис уже существует"
+        )
 
 
-app = FastAPI(title="Auth Service", lifespan=lifespan)
-app.include_router(router)
+@router.post("/services/login", response_model=LoginServiceResponse)
+async def login_service(request: LoginServiceRequest, http_request: Request):
+    service: AuthService = http_request.app.state.auth_service
+    try:
+        data = await service.login_service(request.client_id, request.client_secret)
+        return LoginServiceResponse(**data)
+    except ServiceNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Сервис не найден"
+        )
+    except InvalidServiceSecretError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный секрет сервиса"
+        )
 
 
 @app.get("/health")
@@ -311,11 +359,7 @@ async def health():
     return {"status": "ok"}
 
 
+app.include_router(router)
+
 if __name__ == "__main__":
-    uvicorn.run(
-        "main:app",
-        host=APP_HOST,
-        port=APP_PORT,
-        workers=APP_WORKERS,
-        log_level=APP_LOG_LEVEL,
-    )
+    uvicorn.run("main:app", host=APP_HOST, port=APP_PORT, log_level=APP_LOG_LEVEL)
