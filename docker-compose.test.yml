@@ -57,6 +57,26 @@ services:
       retries: 5
       start_period: 5s  
 
+  tests:
+    image: python:3.11-slim
+    container_name: tests
+    depends_on:
+      auth:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command: >
+      /bin/sh -c "
+      pip install --no-cache-dir poetry &&
+      poetry config virtualenvs.create false &&
+      poetry install --no-root --no-interaction --no-ansi &&
+      poetry run pytest tests/functional --maxfail=1 --disable-warnings -v
+      "
 
 volumes:
   postgres_data:
